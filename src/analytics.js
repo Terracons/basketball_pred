@@ -2,16 +2,17 @@ import { mkdirSync, writeFileSync, openSync, writeSync, closeSync } from 'node:f
 import { join } from 'node:path';
 
 // ESPN ids are shared by ESPN and SportsDataverse. CBBD remains supplemental.
-export function* canonicalIterator(store, kind, league) {
+export function* canonicalIterator(store, kind, league, { start = '', end = '9999' } = {}) {
+  const bounded = start !== '' || end !== '9999';
   const rows = store.db.prepare(`WITH ranked AS (
     SELECT rowid rid, ROW_NUMBER() OVER (PARTITION BY id ORDER BY observed_at DESC,
       CASE source WHEN 'espn' THEN 1 ELSE 0 END DESC) priority
-    FROM records WHERE kind=? AND league=? AND source IN ('espn','sportsdataverse','snapshot'))
+    FROM records WHERE kind=? AND league=? ${bounded ? 'AND starts_at>=? AND starts_at<?' : ''} AND source IN ('espn','sportsdataverse','snapshot'))
     SELECT records.payload,records.observed_at,records.source FROM ranked
-    JOIN records ON records.rowid=ranked.rid WHERE priority=1`).iterate(kind, league);
+    JOIN records ON records.rowid=ranked.rid WHERE priority=1`).iterate(kind, league, ...(bounded ? [start, end] : []));
   for (const r of rows) yield { ...JSON.parse(r.payload), source: r.source, observed_at: r.observed_at };
 }
-export const canonical = (store, kind, league) => [...canonicalIterator(store, kind, league)];
+export const canonical = (store, kind, league, range) => [...canonicalIterator(store, kind, league, range)];
 export function headToHead(store, league, first, second, before, limit = 10) {
   if (!Number.isFinite(Date.parse(before))) throw new Error('A valid as-of timestamp is required');
   return canonical(store, 'game', league)

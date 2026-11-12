@@ -1,6 +1,6 @@
 # Courtside: basketball prediction desk
 
-Local and Vercel-ready NBA/NCAA prediction dashboard, with a statistical baseline, optional OpenRouter review, optional Tavily research, and a quota-managed data collector.
+Local and Vercel-ready NBA/NCAA prediction dashboard, with possession-based efficiency predictions, optional OpenRouter review, optional Tavily research, and a quota-managed data collector.
 
 **Run the app:** `node src/server.js`, then open `http://127.0.0.1:3100`. **Host it:** follow [DEPLOYMENT.md](DEPLOYMENT.md). Tests: `node --test`. There are no npm package dependencies.
 
@@ -10,13 +10,15 @@ Target combined decimal odds are **5, 10, 50, 100, or 200**. The app searches co
 
 The slip displays a game-by-game list of the selection, price, estimated chance and start time, the odds multiplication, and the estimated chance of all picks winning. If the available games cannot reach the target, the fullest available partial combination is saved and remains exportable. JSON and ranked CSV downloads work for complete and partial slips. Local results are saved in `data/predictions/` and in SQLite; hosted reports use shared Redis state. **Build my slip** automatically loads missing or stale game prices and fixtures under the existing quota guards, so a separate manual refresh is not required. Player prices remain an explicit per-event action to protect the free allowance.
 
-Statistics use the latest twenty eligible games, a recency-weighted scoring average blended with the opponent's points allowed, and a normal predictive distribution with a conservative variance floor. At least eight samples are required for each team or player. Only earlier games starting at least six hours before the prediction timestamp are used. Player estimates require an unambiguous identity and matching team. Missing/ambiguous matches and stale prices are excluded, rather than guessed. Estimates are not calibrated accuracy rates, and the model has not demonstrated profitable betting returns.
+Team predictions use possession-based offensive/defensive efficiency, opponent-adjusted Net Rating, overtime-adjusted pace, and explicit venue/rest assumptions. eFG%, rebound shares, turnover rate, free-throw rate and assists/turnovers appear in the evidence and optional AI review without being double-counted as independent weights. Each team needs eight valid paired box scores; otherwise a labeled scoring fallback is used when enough score history exists. Player estimates combine per-minute production, recent minutes, pace and a points-only opponent adjustment. See [MODEL.md](MODEL.md) for exact formulas, assumptions and unavailable inputs.
+
+Statistics use up to twenty eligible recent games. Only completed games starting more than six hours before the prediction timestamp enter team, opponent and league calculations. Player estimates require an unambiguous identity and matching team. Missing/ambiguous matches and stale prices are excluded. Estimates are not calibrated accuracy rates, and the model has not demonstrated profitable betting returns.
 
 Your AI rule is enforced on the server: **at least 70% skips AI; below 70% may be reviewed, at most five network requests per slip**. Tavily searches share those five slots to bound costs. OpenRouter uses the exact model you choose, validates its catalog pricing, reserves a conservative per-request dollar amount, and checks daily/monthly request and dollar caps. AI can keep or veto a pick, but cannot raise its statistical probability. Requests that fail validation stay explicitly unreviewed; no second model is substituted automatically. Research snippets are reference material, not verified injury or lineup feeds.
 
 Add `OPENROUTER_API_KEY`, your optional `OPENROUTER_MODEL`, and `TAVILY_API_KEY` to your private `.env` when available; see `.env.example` for budget settings. These integrations have been tested with mocked API responses, but cannot be live-tested until their keys and chosen model are supplied. Existing odds and CBBD keys have passed live tests.
 
-`node src/evaluate.js` writes a walk-forward evaluation to `data/prediction-evaluation.json`. The initial recent sample tested 200 NBA games and 155 eligible NCAA games, with winner accuracy around 61% and 62%, respectively. These aggregate results do not validate individual quoted percentages, player props, accumulators, or betting profitability.
+`npm run evaluate` compares the old and new models on the same games and writes `data/prediction-evaluation.json`. The recent sample tested 200 NBA games and 155 NCAA games, with winner accuracy changing from 61.0% to 66.5% and 61.9% to 74.8%. Total-points error did not improve. These aggregate results do not validate individual quoted percentages, player props, accumulators, or profitability. `npm run audit:data` reports required-field coverage, rejected pairs and latest stored game timestamps in `data/advanced-data-coverage.json`.
 
 ## Data collector
 

@@ -41,7 +41,7 @@ export async function summaries(http, store, league, limit = 25) {
   }
   return { done, errors };
 }
-export async function history(http, store, league, season, kinds = ['schedule', 'team_box', 'player_box']) {
+export async function history(http, store, league, season, kinds = ['schedule', 'team_box', 'player_box'], { reprocess = false } = {}) {
   checkLeague(league);
   if (!Number.isInteger(season) || season < 2003 || season > 2100) throw new Error('Invalid season ending year');
   const prefix = league === 'nba' ? 'espn_nba' : 'espn_mens_college_basketball';
@@ -55,7 +55,9 @@ export async function history(http, store, league, season, kinds = ['schedule', 
     const path = await http.file('sportsdataverse', url, { ttl: season < currentSeason ? 365 * 86400000 : 86400000 });
     const fetched = store.db.prepare('SELECT fetched_at FROM cache WHERE file=?').get(path)?.fetched_at ?? null;
     const prior = store.db.prepare('SELECT * FROM imports WHERE league=? AND kind=? AND season=?').get(league, kind, season);
-    if (fetched && prior?.fetched_at === fetched && prior.state === 'complete') {
+    const needsPeriods = kind === 'schedule' && store.db.prepare(`SELECT 1 FROM records WHERE kind='game' AND league=?
+      AND source='sportsdataverse' AND json_extract(payload,'$.season')=? AND json_type(payload,'$.periods') IS NULL LIMIT 1`).get(league, season);
+    if (!reprocess && !needsPeriods && fetched && prior?.fetched_at === fetched && prior.state === 'complete') {
       result[kind] = prior.accepted;
       if (prior.rejected) result[`${kind}_rejected`] = prior.rejected;
       continue;
@@ -74,7 +76,7 @@ export async function history(http, store, league, season, kinds = ['schedule', 
           quarantine.run(league, kind, season, rowNumber, error.message, JSON.stringify(row)); rejected++; continue;
         }
         const id = kind === 'schedule' ? payload.game_id : `${payload.game_id}:${kind === 'player_box' ? payload.player_id : payload.team_id}`;
-        store.put(kind === 'schedule' ? 'game' : kind, league, 'sportsdataverse', id, payload);
+        store.put(kind === 'schedule' ? 'game' : kind, league, 'sportsdataverse', id, payload, fetched ?? undefined);
         count++;
       }
     });

@@ -8,6 +8,7 @@
     "start": "node src/server.js",
     "build": "node src/build-vercel.js",
     "evaluate": "node src/evaluate.js",
+    "audit:data": "node src/audit-data.js",
     "test": "node --test",
     "collect": "node src/cli.js collect",
     "status": "node src/cli.js status",

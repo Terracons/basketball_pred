@@ -50,8 +50,18 @@ function render(result) {
     const details = document.createElement('details'); details.append(text('summary', 'Evidence and limitations'));
     const list = document.createElement('ul');
     const projection = p.projection;
-    const facts = p.market.startsWith('player_') ? [`Weighted projection: ${projection.mean.toFixed(1)}. ${projection.samples} games; recent minutes ${projection.minutes.toFixed(1)}.`]
+    const facts = p.market.startsWith('player_') ? [`Projected ${projection.mean.toFixed(1)} from ${projection.samples} games; estimated minutes ${projection.minutes.toFixed(1)}.`,
+      ...(projection.perMinuteRate !== undefined ? [`Per-minute production: ${projection.perMinuteRate.toFixed(2)}. Pace adjustment: ${projection.paceFactor.toFixed(2)}x; opponent adjustment: ${projection.opponentFactor.toFixed(2)}x.`] : [])]
       : [`Projected score: ${p.home} ${projection.homeMean.toFixed(1)}, ${p.away} ${projection.awayMean.toFixed(1)}.`, `Recent sample: ${projection.homeSamples} home-team games, ${projection.awaySamples} away-team games.`];
+    if (projection.model === 'efficiency-v1') {
+      facts.push(`Expected pace: ${projection.expectedPossessions.toFixed(1)} possessions per ${projection.paceMinutes} minutes.`);
+      for (const [name, metrics] of [[p.home, projection.homeMetrics], [p.away, projection.awayMetrics]]) {
+        facts.push(`${name}: adjusted offense ${metrics.adjustedOffense.toFixed(1)}, defense ${metrics.adjustedDefense.toFixed(1)}, Net Rating ${metrics.adjustedNetRating.toFixed(1)} per 100 possessions.`);
+        const f = metrics.factors, pct = value => value === null ? 'N/A' : percent(value);
+        facts.push(`${name}: eFG ${pct(f.efg)}, offensive rebounds ${pct(f.offensiveReboundPct)}, defensive rebounds ${pct(f.defensiveReboundPct)}, turnover rate ${pct(f.turnoverRate)}, free-throw rate ${pct(f.freeThrowRate)}, assists/turnovers ${f.assistToTurnover === null ? 'N/A' : f.assistToTurnover.toFixed(2)}.`);
+      }
+      facts.push('Supporting percentages explain recent performance and are supplied to AI review when enabled. They do not receive extra independent prediction weights.');
+    }
     [...facts, `Estimated return per unit: ${p.expectedReturn.toFixed(3)}. This is model-based, not validated profit.`, `Price timestamp: ${p.priceUpdatedAt}`, ...p.flags].forEach(v => list.append(text('li', v)));
     details.append(list); card.append(details);
     const review = p.ai;

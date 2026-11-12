@@ -141,6 +141,19 @@ test('historical import is restartable and idempotent', async t => {
   assert.deepEqual(await history(http, store, 'nba', 2026, ['schedule']), { schedule: 1 });
   await history(http, store, 'nba', 2026, ['schedule']); assert.equal(canonical(store, 'game', 'nba').length, 1);
 });
+
+test('cached schedules gain period metadata without overriding newer ESPN observations', async t => {
+  const { dir, store } = setup(t), file = join(dir, 'cached-season.csv'), fetched = '2026-11-10T00:00:00Z';
+  writeFileSync(file, 'game_id,season,date,home_id,away_id,home_score,away_score,status_type_completed,status_period\ng1,2026,2026-01-01T00:00:00Z,h,a,100,98,true,5\n');
+  store.db.prepare('INSERT INTO cache VALUES(?,?,?)').run('fixture', file, fetched);
+  store.db.prepare('INSERT INTO imports VALUES(?,?,?,?,?,?,?)').run('nba', 'schedule', 2026, fetched, 'complete', 1, 0);
+  store.put('game', 'nba', 'sportsdataverse', 'g1', { ...game, season: 2026 }, fetched);
+  store.put('game', 'nba', 'espn', 'g1', { ...game, home_score: 112, periods: 5 }, '2026-11-11T00:00:00Z');
+  await history({ file: async () => file }, store, 'nba', 2026, ['schedule']);
+  const stored = store.db.prepare("SELECT payload,observed_at FROM records WHERE kind='game' AND source='sportsdataverse'").get();
+  assert.equal(JSON.parse(stored.payload).periods, 5); assert.equal(stored.observed_at, fetched);
+  assert.equal(canonical(store, 'game', 'nba')[0].home_score, 112);
+});
 test('invalid historical identities are quarantined without dropping later valid rows', async t => {
   const { dir, store } = setup(t), file = join(dir, 'players.csv');
   writeFileSync(file, 'game_id,team_id,athlete_id,game_date_time,points\ng1,h,p1,2026-01-01T00:00:00Z,10\ng1,h,,2026-01-01T00:00:00Z,99\ng1,h,p2,2026-01-01T00:00:00Z,20\n');

@@ -12,7 +12,7 @@ export function validateGame(g) {
 }
 export function scheduleRow(r) {
   return validateGame({ game_id: String(r.game_id || r.id), starts_at: r.date || r.game_date_time,
-    season: num(r.season), season_type: r.season_type, home_id: String(r.home_id), away_id: String(r.away_id),
+    season: num(r.season), season_type: r.season_type, periods: num(r.status_period), home_id: String(r.home_id), away_id: String(r.away_id),
     home_name: r.home_display_name, away_name: r.away_display_name,
     home_score: num(r.home_score), away_score: num(r.away_score), neutral: bool(r.neutral_site),
     status: bool(r.status_type_completed) ? 'final' : r.status_type_state === 'in' ? 'in_progress' : /POSTPONED|CANCELED|CANCELLED/.test(r.status_type_name) ? r.status_type_name.toLowerCase() : 'scheduled' });
@@ -57,6 +57,7 @@ export function espnGames(body) {
     const c = e.competitions?.[0], home = c?.competitors?.find(t => t.homeAway === 'home'), away = c?.competitors?.find(t => t.homeAway === 'away');
     if (!home || !away) throw new Error('ESPN game missing competitors');
     return validateGame({ game_id: String(e.id), starts_at: e.date, season: e.season?.year ?? body.leagues?.[0]?.season?.year,
+      periods: num(e.status?.period ?? c.status?.period),
       home_id: String(home.team.id), away_id: String(away.team.id), home_name: home.team.displayName, away_name: away.team.displayName,
       home_score: num(home.score), away_score: num(away.score), neutral: Boolean(c.neutralSite),
       status: e.status?.type?.completed ? 'final' : e.status?.type?.state === 'in' ? 'in_progress' : /POSTPONED|CANCELED|CANCELLED/.test(e.status?.type?.name) ? e.status.type.name.toLowerCase() : 'scheduled' });

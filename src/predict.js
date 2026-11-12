@@ -1,4 +1,5 @@
 import { canonical } from './analytics.js';
+import { createEfficiencyContext, efficiencyProjection } from './efficiency.js';
 
 export const TARGETS = [5, 10, 50, 100, 200];
 export const TYPES = ['over', 'under', 'player', 'win', 'lose', 'mixed'];
@@ -41,7 +42,7 @@ export function matchEvent(event, games) {
     && Math.abs(Date.parse(g.starts_at) - Date.parse(event.starts_at)) <= 90 * 60000);
   return matches.length === 1 ? matches[0] : null;
 }
-export function teamProjection(game, past, asOf) {
+export function baselineTeamProjection(game, past, asOf) {
   const cutoff = Date.parse(asOf), ageLimit = cutoff - 365 * 86400000;
   const history = teamId => past.filter(g => g.status === 'final' && Date.parse(g.starts_at) + 6 * 3600000 < cutoff
     && Date.parse(g.starts_at) >= ageLimit && g.home_score !== null && g.away_score !== null
@@ -57,13 +58,20 @@ export function teamProjection(game, past, asOf) {
   const homeMean = (hs.mean + aa.mean) / 2, awayMean = (as.mean + ha.mean) / 2;
   const variance = (hs.variance + ha.variance + as.variance + aa.variance) / 2;
   const sd = Math.sqrt(Math.max(variance, 15 ** 2));
-  return { homeMean, awayMean, total: homeMean + awayMean, margin: homeMean - awayMean, sd,
+  return { model: 'scoring-baseline', homeMean, awayMean, total: homeMean + awayMean, margin: homeMean - awayMean, sd, marginSd: sd,
     homeSamples: home.length, awaySamples: away.length,
     homeRecent: home.slice(0, 5), awayRecent: away.slice(0, 5),
     flags: ['Uncalibrated statistical baseline', 'Pregame injuries and lineups not verified',
       ...(home.some(g => cutoff - Date.parse(g.date) > 120 * 86400000) || away.some(g => cutoff - Date.parse(g.date) > 120 * 86400000) ? ['Sample includes an earlier roster period'] : [])] };
 }
-export function playerProjection(rows, playerName, teamIds, stat, asOf) {
+export function teamProjection(game, past, asOf, context) {
+  const advanced = context && efficiencyProjection(game, context);
+  if (advanced) return advanced;
+  const baseline = baselineTeamProjection(game, past, asOf);
+  if (baseline) baseline.flags.unshift('Scoring fallback: fewer than eight valid paired efficiency box scores for one or both teams');
+  return baseline;
+}
+export function playerProjection(rows, playerName, teamIds, stat, asOf, context, game, teamForecast) {
   const cutoff = Date.parse(asOf);
   const found = rows.filter(p => normalizedName(p.player_name) === normalizedName(playerName)
     && teamIds.includes(p.team_id) && !p.did_not_play && Number.isFinite(p[stat]) && p.minutes > 0
@@ -72,10 +80,26 @@ export function playerProjection(rows, playerName, teamIds, stat, asOf) {
   if (ids.size !== 1) return null;
   const samples = found.sort((a, b) => b.starts_at.localeCompare(a.starts_at)).slice(0, 20);
   if (samples.length < 8) return null;
-  const recent = weighted(samples.map(p => p[stat]));
-  return { mean: recent.mean, sd: Math.sqrt(Math.max(recent.variance, 4)), samples: samples.length,
-    playerId: samples[0].player_id, minutes: weighted(samples.map(p => p.minutes)).mean,
-    flags: ['Uncalibrated player baseline', 'Availability and expected minutes not verified'] };
+  const recent = weighted(samples.map(p => p[stat])), teamId = samples[0].team_id;
+  const regulationMinutes = p => {
+    const paired = context?.byGame.get(p.game_id)?.find(r => r.teamId === p.team_id);
+    return paired ? p.minutes * context.regulation / paired.duration : p.minutes;
+  };
+  const recentRole = samples.filter(p => p.team_id === teamId).slice(0, 5);
+  const minutes = Math.min(context?.regulation ?? 48, weighted(recentRole.map(regulationMinutes)).mean);
+  const rate = weighted(samples.map(p => p[stat])).mean / weighted(samples.map(p => p.minutes)).mean;
+  const paired = samples.map(p => context?.byGame.get(p.game_id)?.find(r => r.teamId === p.team_id)).filter(Boolean);
+  const historicalPace = paired.length >= 8 ? weighted(paired.map(r => r.pace)).mean : null;
+  const paceFactor = historicalPace && teamForecast?.expectedPossessions ? Math.max(.85, Math.min(1.15, teamForecast.expectedPossessions / historicalPace)) : 1;
+  const opponentId = game && (teamId === game.home_id ? game.away_id : game.home_id);
+  const opponent = context?.ratings.get(opponentId);
+  const opponentFactor = stat === 'points' && opponent?.samples >= 8 ? Math.max(.9, Math.min(1.1, 1 + .5 * (opponent.adjustedDefense / context.leagueRating - 1))) : 1;
+  const projected = rate * minutes * paceFactor * opponentFactor;
+  return { model: 'minutes-rate-v1', mean: projected, sd: Math.sqrt(Math.max(recent.variance, 4)) * Math.max(1, projected / Math.max(recent.mean, 1)), samples: samples.length,
+    playerId: samples[0].player_id, teamId, minutes, perMinuteRate: rate, paceFactor, opponentFactor,
+    flags: ['Uncalibrated minutes and per-minute model', 'Availability and expected minutes not verified; minutes estimated from recent appearances',
+      ...(historicalPace ? [] : ['Insufficient matched team pace history for player pace adjustment']),
+      ...(recentRole.length < 5 ? ['Limited appearances with the latest team'] : [])] };
 }
 export function generateCandidates(store, options = {}) {
   const { league = 'nba', type = 'over', playerStat = 'points', bookmaker = '', date,
@@ -110,19 +134,21 @@ export function generateCandidates(store, options = {}) {
       playerRows.push(...unique.values());
     }
   }
+  const teamBoxes = canonical(store, 'team_box', league, { start: new Date(now - 365 * 86400000).toISOString(), end: asOf });
+  const context = createEfficiencyContext(games, teamBoxes, league, asOf);
   const candidates = [], excluded = { unmatchedEvents: 0, insufficientHistory: 0, belowThreshold: 0, staleOrUnavailable: 0 };
   const projections = new Map();
   for (const r of relevant) {
     const game = matchEvent(r, upcoming);
     if (!game) { excluded.unmatchedEvents++; continue; }
-    if (!projections.has(game.game_id)) projections.set(game.game_id, teamProjection(game, games, asOf));
+    if (!projections.has(game.game_id)) projections.set(game.game_id, teamProjection(game, games, asOf, context));
     const projection = projections.get(game.game_id);
     for (const outcome of r.outcomes ?? []) {
       if (!Number.isFinite(outcome.price) || outcome.price <= 1) continue;
       const isPlayer = r.market.startsWith('player_'), isTotal = r.market === 'totals';
       let probability, push = 0, label, detail = projection;
       if (isPlayer) {
-        detail = playerProjection(playerRows, outcome.description, [game.home_id, game.away_id], playerStat, asOf);
+        detail = playerProjection(playerRows, outcome.description, [game.home_id, game.away_id], playerStat, asOf, context, game, projection);
         if (!detail || !['Over', 'Under'].includes(outcome.name) || !Number.isFinite(outcome.point)) { excluded.insufficientHistory++; continue; }
         const p = lineProbabilities(detail.mean, detail.sd, outcome.point); probability = p[outcome.name.toLowerCase()]; push = p.push;
         label = `${outcome.description}: ${outcome.name} ${outcome.point} ${playerStat.toUpperCase()}`;
@@ -135,7 +161,7 @@ export function generateCandidates(store, options = {}) {
         } else {
           const home = normalizedName(outcome.name) === normalizedName(game.home_name), away = normalizedName(outcome.name) === normalizedName(game.away_name);
           if (!home && !away) continue;
-          probability = home ? 1 - normalCdf(0, projection.margin, projection.sd) : normalCdf(0, projection.margin, projection.sd);
+          probability = home ? 1 - normalCdf(0, projection.margin, projection.marginSd) : normalCdf(0, projection.margin, projection.marginSd);
           label = type === 'lose' ? `${home ? game.away_name : game.home_name} to lose (${outcome.name} wins)` : `${outcome.name} to win`;
         }
       }
@@ -154,7 +180,8 @@ export function generateCandidates(store, options = {}) {
   candidates.forEach((candidate, index) => { candidate.candidateRank = index + 1; });
   return { generatedAt: asOf, league, type, candidates, excluded,
     qualifyingGameCount: new Set(candidates.map(c => c.gameId)).size,
-    bookmakers: [...new Set(candidates.map(c => c.bookmaker))], methodology: 'Recent weighted scoring with a normal predictive distribution; uncalibrated, not a measured accuracy rate.' };
+    bookmakers: [...new Set(candidates.map(c => c.bookmaker))], dataCoverage: context.coverage,
+    methodology: 'Possession-based opponent-adjusted efficiency and pace when at least eight valid paired box scores exist per team; otherwise a labeled scoring fallback. Player props use estimated minutes and per-minute production. Supporting box-score factors are evidence, not extra arbitrary weights. Normal-distribution probabilities remain uncalibrated.' };
 }
 export function buildSlip(candidates, target, { maxLegs = 50, banned = new Set() } = {}) {
   if (!TARGETS.includes(target)) throw new Error('Choose target odds 5, 10, 50, 100, or 200');
