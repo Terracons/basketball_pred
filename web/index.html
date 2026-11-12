@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>COURTSIDE / Prediction desk</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body>
+<dialog id="login-dialog"><form id="login-form"><p class="eyebrow">PRIVATE PREDICTION DESK</p><h2>Enter your workspace.</h2><p class="help">Use the app password you set in your hosting environment.</p><label for="app-password">App password</label><input id="app-password" type="password" autocomplete="current-password" required><button class="primary" type="submit" id="sign-in">Sign in</button><p id="login-error" role="alert"></p></form></dialog>
+<header class="masthead"><a class="wordmark" href="/">COURTSIDE<span class="ball" aria-hidden="true">◉</span></a><span class="edition">BASKETBALL / PREDICTION DESK</span><span class="status" id="connection">Connecting</span></header>
+<main>
+<section class="intro"><div><p class="eyebrow">READ THE GAME</p><h1>Numbers first.<br><em>A second opinion when needed.</em></h1></div><p class="intro-note">NBA &amp; NCAA. Recent performance, real bookmaker prices, and a model you choose. Every percentage is a statistical estimate, not measured accuracy.</p></section>
+<div class="workspace">
+<aside class="controls"><div class="section-label"><span>01</span> Set your approach</div>
+<form id="prediction-form">
+<label for="league">Competition</label><select id="league"><option value="nba">NBA</option><option value="ncaa">NCAA men</option></select>
+<label for="date">Game date <small>Africa/Lagos</small></label><input id="date" type="date" required>
+<label for="type">Market</label><select id="type"><option value="over">Overs only</option><option value="under">Unders only</option><option value="player">Individual players</option><option value="win">Team to win</option><option value="lose">Team to lose</option><option value="mixed">Mixed game markets</option></select>
+<p class="help" id="market-help">Final combined game points, including overtime.</p>
+<div id="player-controls" hidden><label for="player-stat">Player statistic</label><select id="player-stat"><option value="points">Points</option><option value="rebounds">Rebounds</option><option value="assists">Assists</option><option value="pra">Points + rebounds + assists</option></select><label for="prop-event">Fetch player lines for</label><select id="prop-event"></select><button class="secondary" id="fetch-props" type="button">Fetch player prices</button><p class="help">Up to 3 odds credits. Player markets vary by bookmaker. PRA prices are not in the default feed.</p></div>
+<label for="bookmaker">Bookmaker</label><select id="bookmaker"><option value="">Choose automatically</option></select>
+<label>Target combined odds</label><fieldset class="targets"><legend class="sr-only">Target decimal odds</legend><label><input type="radio" name="target" value="5" checked><span>5</span></label><label><input type="radio" name="target" value="10"><span>10</span></label><label><input type="radio" name="target" value="50"><span>50</span></label><label><input type="radio" name="target" value="100"><span>100</span></label><label><input type="radio" name="target" value="200"><span>200</span></label></fieldset>
+<label for="min-probability">Minimum estimate per pick</label><select id="min-probability"><option value="0.5">50%</option><option value="0.55">55%</option><option value="0.6">60%</option><option value="0.65">65%</option><option value="0.7">70%</option><option value="0.75">75%</option></select>
+<button class="primary" id="generate" type="submit">Build my slip <span aria-hidden="true">↗</span></button>
+</form>
+</aside>
+<section class="desk" aria-label="Prediction results"><div class="desk-toolbar"><div class="section-label"><span>02</span> The analysis</div><button class="text-button" id="refresh-odds" type="button">Refresh game prices</button></div><p class="price-note" id="price-note">Loading fixture coverage...</p><div id="message" role="status" aria-live="polite"></div>
+<div id="empty-state" class="empty-state"><div class="court" aria-hidden="true"><i></i><b></b></div><h2>Build around the evidence.</h2><p>Choose a market and an odds target. We look for positive estimated value, keep each slip to one bookmaker, and take at most one pick per game.</p><p class="help">If the data cannot support the target, you get a partial slip or no picks. Prices are never invented.</p></div>
+<div id="slip" hidden><div class="slip-heading"><div><p class="eyebrow" id="slip-status">STATISTICAL SLIP</p><h2 id="slip-title"></h2></div><div class="odds-total"><small>COMBINED DECIMAL ODDS</small><strong id="combined-odds"></strong></div></div><div class="summary-strip"><span id="pick-count"></span><span id="all-win"></span><span id="request-count"></span></div><p class="help" id="partial-reason"></p><div id="picks"></div><p class="method-note" id="method-note"></p><button class="secondary" id="download" type="button">Download analysis JSON</button><button class="secondary" id="download-csv" type="button">Download ranked picks CSV</button></div>
+</section>
+<aside class="review-panel"><div class="section-label"><span>03</span> Your second opinion</div><h2>A model of<br>your choice.</h2><div class="policy"><strong>70%</strong><p>At or above this estimate, AI is skipped. Below it, AI can review a pick.</p></div><p class="help">Maximum 5 network requests per slip, shared by AI reviews and optional searches. AI can keep or reject a pick; its probability stays statistical.</p>
+<label class="check"><input id="ai-enabled" type="checkbox"> Enable AI review</label><p class="help" id="ai-config"></p>
+<label for="model">OpenRouter model ID</label><input id="model" type="text" list="models" placeholder="provider/model-id" autocomplete="off"><datalist id="models"></datalist><button class="secondary" id="load-models" type="button">Load model catalog</button><p class="help" id="model-price">No model selected automatically. Catalog is sorted by token price.</p>
+<label class="check"><input id="research-enabled" type="checkbox"> Add Tavily research</label><p class="help" id="research-config">Optional source excerpts about recent performance and availability.</p><div class="rule-note"><span>THE SMALL PRINT</span><p>Five picks at 70% each have about a 17% chance of all winning if independent. A 200-odds slip is a target payout, not a confidence score.</p><p>Injuries, minutes and starting lineups need verification. Research snippets may be incomplete or out of date.</p></div>
+</aside>
+</div>
+<footer><span>COURTSIDE / PREDICTION WORKSPACE</span><span>Data: SportsDataverse / hoopR, ESPN. Statistical estimates, optional AI. No bets are placed.</span></footer>
+</main>
+</body></html>

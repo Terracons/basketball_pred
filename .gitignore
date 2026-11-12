@@ -1,0 +1,10 @@
+data/
+.env
+node_modules/
+*.log
+public/
+runtime/
+.build-data/
+.vercel/
+.env.*
+!.env.example
