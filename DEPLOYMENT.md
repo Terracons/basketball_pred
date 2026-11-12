@@ -8,7 +8,7 @@ This repository supports Vercel's Node.js Functions and also runs locally. API k
 2. Use framework **Other**, Node.js **22.x**, build command **npm run build**, and output directory **public**. `vercel.json` already declares these build settings, the API rewrite, security headers, and function duration.
 3. In the project's **Storage / Marketplace**, connect an **Upstash Redis** database. Use its free plan if it meets your usage. Confirm that `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are added to the project's environment variables. Legacy `KV_REST_API_URL` names are not used here.
 4. Add the environment variables below, then deploy or redeploy. Use the same values for Preview if you want to test a preview deployment.
-5. Open the deployment, sign in with `APP_PASSWORD`, select NBA or NCAA, and click **Refresh game prices**. This also updates recent fixtures and up to five missing game summaries. Game odds use up to two credits per selected league. Price and fixture caches avoid repeated spending.
+5. Open the deployment, sign in with `APP_PASSWORD`, select NBA or NCAA and a target such as 5, then click **Build my slip**. Missing or stale game prices and fixtures load automatically, within the quota limits. A separate **Refresh game prices** button also updates up to five missing game summaries. Game odds use up to two credits per selected league. Price and fixture caches avoid repeated spending. Player prices remain an explicit per-event request.
 
 | Variable | Required? | Purpose |
 | --- | --- | --- |

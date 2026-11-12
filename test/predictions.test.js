@@ -7,6 +7,9 @@ import { Store } from '../src/store.js';
 import { Intelligence } from '../src/intelligence.js';
 import { buildSlip, lineProbabilities, matchEvent, teamProjection, playerProjection, generateCandidates } from '../src/predict.js';
 import { createPrediction, slipCsv } from '../src/slips.js';
+import { preparePredictionData } from '../src/prepare-prediction.js';
+import { createApplication } from '../src/application.js';
+import { Readable } from 'node:stream';
 
 const asOf = '2026-11-12T16:00:00.000Z';
 function setup(t) {
@@ -78,9 +81,79 @@ test('unreachable odds targets return an honest partial result', () => {
   assert.ok(Math.abs(result.estimatedAllWinProbability - .65 ** 2) < 1e-10);
 });
 test('ranking prioritizes individual probability over a larger price or estimated return', () => {
-  const result = buildSlip([pick('low', .55, 10), pick('best', .9, 1.4), pick('middle', .8, 1.7)], 5);
+  const result = buildSlip([pick('low', .55, 2.2), pick('best', .9, 1.4), pick('middle', .8, 1.7)], 5);
   assert.deepEqual(result.picks.map(p => p.id), ['best', 'middle', 'low']);
   assert.deepEqual(buildSlip([pick('low', .55, 10), pick('best', .9, 1.4)], 200).picks.map(p => p.id), ['best', 'low']);
+});
+test('five-odds selection returns the games making a 5.05 slip with individual and combined chances', () => {
+  const result = buildSlip([pick('a', .8, 1.7), pick('b', .75, 1.8), pick('c', .7, 1.65)], 5);
+  assert.equal(result.targetReached, true); assert.equal(result.closeToTarget, true);
+  assert.equal(result.picks.length, 3); assert.ok(Math.abs(result.combinedOdds - 5.049) < 1e-10);
+  assert.deepEqual(result.picks.map(p => p.probability), [.8, .75, .7]);
+  assert.deepEqual(result.oddsCalculation, [1.7, 1.8, 1.65]);
+  assert.ok(Math.abs(result.estimatedAllWinProbability - .42) < 1e-10);
+});
+test('combination search can choose another selection for a game to reach the target', () => {
+  const result = buildSlip([pick('favorite', .9, 1.2, 'same'), pick('alternative', .75, 1.7, 'same'), pick('b', .74, 1.8), pick('c', .7, 1.65)], 5);
+  assert.equal(result.targetReached, true); assert.equal(result.picks.length, 3);
+  assert.ok(result.picks.some(p => p.id === 'alternative')); assert.ok(!result.picks.some(p => p.id === 'favorite'));
+});
+test('a partial slip uses the fuller available combination rather than a single at another bookmaker', () => {
+  const result = buildSlip([pick('single', .9, 2, 'single', 'small'), pick('a', .8, 1.95, 'a', 'fuller'), pick('b', .7, 1.95, 'b', 'fuller')], 5);
+  assert.equal(result.targetReached, false); assert.equal(result.picks.length, 2);
+  assert.ok(Math.abs(result.combinedOdds - 3.8025) < 1e-10);
+  assert.equal(result.picks[0].bookmaker, 'fuller');
+});
+test('all supported odds targets build real combinations and never repeat a canonical game', () => {
+  const picks = Array.from({ length: 12 }, (_, i) => ({ ...pick(`p${i}`, .9 - i * .02, 1.7), gameId: `game${i}` }));
+  picks.push({ ...pick('duplicate', .92, 1.8, 'different-event-id'), gameId: 'game0' });
+  for (const target of [5, 10, 50, 100, 200]) {
+    const result = buildSlip(picks, target); assert.equal(result.targetReached, true);
+    assert.ok(result.combinedOdds >= target); assert.equal(new Set(result.picks.map(p => p.gameId)).size, result.picks.length);
+    assert.ok(Math.abs(result.picks.reduce((total, p) => total * p.odds, 1) - result.combinedOdds) < 1e-8);
+  }
+});
+test('chance-qualified games are not silently removed by an unrelated value filter', t => {
+  const store = setup(t); seed(store, { price: 1.5, line: 209.5 });
+  const result = generateCandidates(store, { asOf, type: 'over' });
+  assert.equal(result.candidates.length, 8); assert.ok(result.candidates.every(p => p.expectedReturn < 0 && p.probability >= .5));
+});
+test('missing prices are fetched on build, while existing fresh prices do not spend more quota', async t => {
+  const store = setup(t); let fixtureCalls = 0, oddsCalls = 0;
+  const deps = { now: new Date(asOf), getScoreboard: async () => { fixtureCalls++; }, getOdds: async () => { oddsCalls++; return { events: 1 }; } };
+  const result = await preparePredictionData(store, {}, { league: 'nba', type: 'over' }, 'test-only', deps);
+  assert.equal(result.oddsRefreshed, true); assert.equal(fixtureCalls, 3); assert.equal(oddsCalls, 1);
+  seed(store);
+  await preparePredictionData(store, {}, { league: 'nba', type: 'over' }, 'test-only', deps);
+  assert.equal(fixtureCalls, 3); assert.equal(oddsCalls, 1);
+});
+test('cold-start predict API loads real-shaped quotes then returns a multi-game slip without manual refresh', async t => {
+  const store = setup(t); seed(store); store.db.exec("DELETE FROM records WHERE kind='odds'");
+  let calls = 0;
+  const upcoming = store.rows('game', 'nba').filter(g => g.status === 'scheduled').slice(0, 3);
+  const app = createApplication({ store, directory: join(tmpdir(), `courtside-api-${process.pid}`), env: { ODDS_API_KEY: 'test-only' }, fetcher: async url => {
+    calls++;
+    if (url.includes('espn.com')) return new Response(JSON.stringify({ events: [] }));
+    return new Response(JSON.stringify(upcoming.map(g => ({ id: g.game_id, commence_time: g.starts_at, home_team: g.home_name, away_team: g.away_name,
+      bookmakers: [{ key: 'book', last_update: new Date().toISOString(), markets: [{ key: 'totals', outcomes: [{ name: 'Over', point: 200.5, price: 1.8 }] }] }] }))));
+  } });
+  const dir = join(tmpdir(), `courtside-api-${process.pid}`);
+  // App uses this directory for cache and exports; make it before taking its lock.
+  const { mkdirSync } = await import('node:fs'); mkdirSync(dir, { recursive: true });
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  async function call(method, path, payload, token = '') {
+    const req = Readable.from(payload ? [JSON.stringify(payload)] : []);
+    Object.assign(req, { method, url: path, headers: { host: '127.0.0.1:3100', 'x-app-token': token } });
+    const res = { writeHead(status) { this.status = status; }, end(body) { this.body = JSON.parse(body); } };
+    await app.handler(req, res); return res;
+  }
+  const config = await call('GET', '/api/config');
+  const result = await call('POST', '/api/predict', { league: 'nba', type: 'over', target: 5 }, config.body.actionToken);
+  assert.equal(result.status, 200); assert.equal(result.body.slip.targetReached, true); assert.equal(result.body.slip.picks.length, 3);
+  assert.equal(calls, 4);
+  const repeat = await call('POST', '/api/predict', { league: 'nba', type: 'over', target: 5 }, config.body.actionToken);
+  assert.equal(repeat.body.slip.picks.length, 3); assert.equal(calls, 4);
+  assert.equal(store.db.prepare("SELECT SUM(units) n FROM usage WHERE provider='odds'").get().n, 2);
 });
 test('partial CSV export preserves ranking, actual prices and probabilities and escapes formula cells', () => {
   const result = { slip: { picks: [ { ...pick('a', .9, 1.4), away: '=SUM(1,2)', ai: { status: 'disabled' } }, { ...pick('b', .8, 1.6), ai: { status: 'disabled' } }] } };

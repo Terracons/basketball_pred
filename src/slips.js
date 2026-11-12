@@ -13,11 +13,11 @@ export function slipCsv(result) {
   }).join(',')).join('\r\n') + '\r\n';
 }
 
-export async function createPrediction(store, intelligence, options = {}, { exportDirectory } = {}) {
+export async function createPrediction(store, intelligence, options = {}, { exportDirectory, preparation } = {}) {
   const target = Number(options.target ?? 5);
   if (!TARGETS.includes(target)) throw new Error('Invalid target odds');
   const generated = generateCandidates(store, options), slipId = randomUUID();
-  const banned = new Set(), reviews = new Map(), errors = [];
+  const banned = new Set(), reviews = new Map(), errors = [...(preparation?.warnings ?? [])];
   let slip = buildSlip(generated.candidates, target);
   if (options.aiEnabled) {
     if (!intelligence.env.OPENROUTER_API_KEY || !options.model) throw new Error('Add OPENROUTER_API_KEY and select your model before enabling AI');
@@ -43,7 +43,7 @@ export async function createPrediction(store, intelligence, options = {}, { expo
     : reviews.get(pick.id) ?? { status: options.aiEnabled ? 'request_limit_or_unreviewed' : 'disabled' } }));
   const result = { slipId, ...generated, candidates: undefined, candidateCount: generated.candidates.length,
     slip, aiRequestsAndSearches: intelligence.used(slipId), aiThreshold: 0.7, maxRequests: 5,
-    reviews: [...reviews.entries()].map(([pickId, review]) => ({ pickId, ...review })), errors };
+    reviews: [...reviews.entries()].map(([pickId, review]) => ({ pickId, ...review })), preparation, errors };
   store.put('prediction', options.league ?? 'nba', 'statistics', slipId, result);
   if (exportDirectory) {
     mkdirSync(exportDirectory, { recursive: true });

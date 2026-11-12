@@ -6,8 +6,9 @@ import { createPrediction } from './slips.js';
 import { canonical } from './analytics.js';
 import { odds, scoreboard, summaries, dayString } from './collect.js';
 import { createAuth } from './auth.js';
+import { preparePredictionData } from './prepare-prediction.js';
 
-export function createApplication({ store, directory, env = process.env, beforeExternalFetch = async () => {}, loginLimiter = async () => true } = {}) {
+export function createApplication({ store, directory, env = process.env, beforeExternalFetch = async () => {}, loginLimiter = async () => true, fetcher = fetch } = {}) {
   const production = env.VERCEL === '1', port = Number(env.PORT || 3100);
   const auth = createAuth(env.APP_PASSWORD, production);
   const origins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`,
@@ -15,7 +16,7 @@ export function createApplication({ store, directory, env = process.env, beforeE
   const hosts = new Set([...origins].map(origin => new URL(origin).host));
   const network = async (url, init = {}) => {
     await beforeExternalFetch();
-    return fetch(url, { ...init, ...(production ? { signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(45000)]) : AbortSignal.timeout(45000) } : {}) });
+    return fetcher(url, { ...init, ...(production ? { signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(45000)]) : AbortSignal.timeout(45000) } : {}) });
   };
   const intelligence = new Intelligence(store, { env, fetcher: network });
   let busy = false;
@@ -40,6 +41,11 @@ export function createApplication({ store, directory, env = process.env, beforeE
     const filtered = Object.fromEntries(['league', 'type', 'playerStat', 'bookmaker', 'date', 'model'].filter(k => typeof value[k] === 'string').map(k => [k, value[k]]));
     return { ...filtered, target: Number(value.target), minProbability: Number(value.minProbability ?? 0.5),
       aiEnabled: value.aiEnabled === true, researchEnabled: value.researchEnabled === true };
+  }
+  function transport() {
+    const limits = { daily: Number(env.ODDS_DAILY_BUDGET ?? 14), monthly: Number(env.ODDS_MONTHLY_BUDGET ?? 450) };
+    if (![limits.daily, limits.monthly].every(n => Number.isSafeInteger(n) && n >= 0)) throw new Error('Invalid odds budgets');
+    return new Http(store, directory, { limits: { odds: limits }, fetcher: network });
   }
   const fileMap = { '/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css' };
   const handler = async (request, response) => {
@@ -75,22 +81,27 @@ export function createApplication({ store, directory, env = process.env, beforeE
       }
       if (request.method !== 'POST' || request.headers['x-app-token'] !== auth.actionToken) { send(response, 403, { error: 'Invalid app action' }); return; }
       const value = await body(request);
-      if (url.pathname === '/api/predict') { send(response, 200, await locked(() => createPrediction(store, intelligence, predictionOptions(value), { exportDirectory: join(directory, 'predictions') }))); return; }
+      if (url.pathname === '/api/predict') {
+        send(response, 200, await locked(async () => {
+          const selected = predictionOptions(value);
+          if (![5, 10, 50, 100, 200].includes(selected.target) || !Number.isFinite(selected.minProbability) || selected.minProbability < .5 || selected.minProbability > .95) throw new Error('Invalid target or minimum chance');
+          const preparation = await preparePredictionData(store, transport(), selected, env.ODDS_API_KEY);
+          return createPrediction(store, intelligence, selected, { exportDirectory: join(directory, 'predictions'), preparation });
+        })); return;
+      }
       if (url.pathname === '/api/models') { send(response, 200, await locked(() => intelligence.models())); return; }
       if (['/api/refresh-odds', '/api/player-odds'].includes(url.pathname)) {
         if (!['nba', 'ncaa'].includes(value.league)) throw new Error('Invalid league');
         if (url.pathname === '/api/player-odds' && !store.rows('odds', value.league).some(r => r.event_id === value.eventId)) throw new Error('Select a known odds event');
-        const limits = { daily: Number(env.ODDS_DAILY_BUDGET ?? 14), monthly: Number(env.ODDS_MONTHLY_BUDGET ?? 450) };
-        if (![limits.daily, limits.monthly].every(n => Number.isSafeInteger(n) && n >= 0)) throw new Error('Invalid odds budgets');
         send(response, 200, await locked(async () => {
-          const transport = new Http(store, directory, { limits: { odds: limits }, fetcher: network });
+          const client = transport();
           if (url.pathname === '/api/refresh-odds') {
             const date = new Date();
-            for (const offset of [-1, 0, 1]) { const d = new Date(date); d.setUTCDate(d.getUTCDate() + offset); await scoreboard(transport, store, value.league, dayString(d)); }
-            const boxes = await summaries(transport, store, value.league, 5);
+            for (const offset of [-1, 0, 1]) { const d = new Date(date); d.setUTCDate(d.getUTCDate() + offset); await scoreboard(client, store, value.league, dayString(d)); }
+            const boxes = await summaries(client, store, value.league, 5);
             if (boxes.errors.length) console.warn(`${value.league}: some recent summaries are incomplete`);
           }
-          return odds(transport, store, value.league, env.ODDS_API_KEY, url.pathname === '/api/player-odds' ? value.eventId : undefined);
+          return odds(client, store, value.league, env.ODDS_API_KEY, url.pathname === '/api/player-odds' ? value.eventId : undefined);
         })); return;
       }
       send(response, 404, { error: 'Unknown endpoint' });

@@ -24,13 +24,23 @@ async function fixtures() {
 function render(result) {
   prediction = result; $('empty-state').hidden = true; $('slip').hidden = false;
   const s = result.slip;
-  $('slip-status').textContent = s.targetReached ? 'TARGET REACHED / STATISTICAL ESTIMATES' : 'PARTIAL RESULT / NO FORCED PICKS';
-  $('slip-title').textContent = `${s.target} odds target`;
+  $('slip-status').textContent = s.targetReached ? 'YOUR SLIP / TARGET REACHED' : s.picks.length ? 'YOUR SLIP / BELOW TARGET' : 'NO QUALIFYING GAMES';
+  $('slip-title').textContent = `${s.target}-odds slip`;
   $('combined-odds').textContent = s.picks.length ? s.combinedOdds.toFixed(2) : 'N/A';
   $('pick-count').textContent = `${s.picks.length} ${s.picks.length === 1 ? 'pick' : 'picks'} • ${s.picks[0]?.bookmaker ?? 'No bookmaker'}`;
-  $('all-win').textContent = s.estimatedAllWinProbability === null ? 'No joint estimate' : `${percent(s.estimatedAllWinProbability)} estimated all-win chance`;
+  $('all-win').textContent = s.estimatedAllWinProbability === null ? 'No combined chance estimate' : `All picks win: ${percent(s.estimatedAllWinProbability)} estimated`;
   $('request-count').textContent = `${result.aiRequestsAndSearches}/5 AI + search requests`;
-  $('partial-reason').textContent = `${s.reason || `${result.candidateCount} qualifying market selections considered.`} Picks are ranked by individual estimated probability, highest first. This result is saved automatically, including partial slips.`;
+  $('partial-reason').textContent = `${s.reason || `${result.qualifyingGameCount ?? s.picks.length} qualifying games considered. Actual combined odds are ${s.combinedOdds.toFixed(2)} against your ${s.target} minimum.${s.closeToTarget === false ? ' A closer combination to the target was not found with the available prices.' : ''}`} Each pick's estimated chance is ranked highest first. This slip is saved automatically.`;
+  $('ticket-legs').replaceChildren();
+  for (const [i, p] of s.picks.entries()) {
+    const leg = document.createElement('li'); leg.className = 'ticket-leg';
+    const game = text('div', '', 'ticket-game');
+    game.append(text('span', `#${String(i + 1).padStart(2, '0')} / ${p.away} vs ${p.home}`, 'ticket-matchup'), text('strong', p.label), text('small', new Date(p.startsAt).toLocaleString()));
+    const odds = text('div', '', 'ticket-number'); odds.append(text('small', 'Odds'), text('strong', p.odds.toFixed(2)));
+    const chance = text('div', '', 'ticket-number ticket-chance'); chance.append(text('small', 'Est. chance'), text('strong', percent(p.probability)));
+    leg.append(game, odds, chance); $('ticket-legs').append(leg);
+  }
+  $('odds-calculation').textContent = s.picks.length ? `${s.picks.map(p => p.odds.toFixed(2)).join(' × ')} = ${s.combinedOdds.toFixed(2)}` : 'No priced selections';
   $('method-note').textContent = `${result.methodology} ${s.probabilityNote}`;
   $('picks').replaceChildren();
   for (const [i, p] of s.picks.entries()) {
@@ -54,12 +64,12 @@ function render(result) {
     card.append(sources); $('picks').append(card);
   }
   const issues = result.errors.length ? result.errors.join(' ') : '';
-  message(`${s.targetReached ? 'Analysis ready.' : 'The requested target could not be reached.'} ${result.excluded.unmatchedEvents} unmatched price snapshots; ${result.excluded.insufficientHistory} selections without sufficient history. ${issues}`, Boolean(issues));
+  message(`${s.targetReached ? `Your ${s.target}-odds slip is ready with ${s.picks.length} ${s.picks.length === 1 ? 'game' : 'games'}.` : s.picks.length ? `Only ${s.combinedOdds.toFixed(2)} odds are available for your filters. You can export these ${s.picks.length} selections.` : 'No priced selections match these filters. Check the messages below, or try another date or market.'} ${issues}`, Boolean(issues));
 }
 async function action(button, fn) { button.disabled = true; try { await fn(); } catch (e) { message(e.message, true); } finally { button.disabled = false; } }
 $('prediction-form').addEventListener('submit', event => {
   event.preventDefault(); action($('generate'), async () => {
-    message('Calculating recent form and available prices. AI is only called for eligible picks when enabled.');
+    message('Loading available game prices and finding a combination for your target odds...');
     render(await api('/api/predict', { league: $('league').value, date: $('date').value, type: $('type').value, playerStat: $('player-stat').value,
       bookmaker: $('bookmaker').value, target: Number(document.querySelector('[name=target]:checked').value), minProbability: Number($('min-probability').value),
       aiEnabled: $('ai-enabled').checked, researchEnabled: $('research-enabled').checked, model: $('model').value.trim() }));

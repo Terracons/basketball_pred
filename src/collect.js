@@ -104,7 +104,7 @@ export async function odds(http, store, league, key, eventId) {
   const markets = eventId ? 'player_points,player_rebounds,player_assists' : 'h2h,totals';
   const suffix = eventId ? `/events/${eventId}/odds` : '/odds';
   const url = `https://api.the-odds-api.com/v4/sports/${sport}${suffix}?regions=us&markets=${markets}&oddsFormat=decimal`;
-  const body = await http.json('odds', url, { headers: { 'x-api-key': key }, ttl: eventId ? 24 * 3600000 : 12 * 3600000, cost: eventId ? 3 : 2 });
+  const body = await http.json('odds', url, { headers: { 'x-api-key': key }, ttl: 3 * 3600000, cost: eventId ? 3 : 2 });
   const observed = new Date().toISOString();
   const events = eventId ? [body] : body;
   if (!Array.isArray(events)) throw new Error('Odds response schema changed');

@@ -142,8 +142,6 @@ export function generateCandidates(store, options = {}) {
       probability = Math.max(0.02, Math.min(0.98, probability));
       if (probability < minProbability) { excluded.belowThreshold++; continue; }
       const expectedReturn = probability * outcome.price + push - 1;
-      // Do not pad a target with statistically negative expected-return selections.
-      if (expectedReturn <= 0) continue;
       candidates.push({ id: `${r.event_id}:${r.bookmaker}:${r.market}:${outcome.description ?? ''}:${outcome.name}:${outcome.point ?? ''}`,
         eventId: r.event_id, gameId: game.game_id, league, home: game.home_name, away: game.away_name,
         startsAt: game.starts_at, bookmaker: r.bookmaker, market: r.market, label, odds: outcome.price,
@@ -155,28 +153,79 @@ export function generateCandidates(store, options = {}) {
   candidates.sort((a, b) => b.probability - a.probability || b.expectedReturn - a.expectedReturn);
   candidates.forEach((candidate, index) => { candidate.candidateRank = index + 1; });
   return { generatedAt: asOf, league, type, candidates, excluded,
+    qualifyingGameCount: new Set(candidates.map(c => c.gameId)).size,
     bookmakers: [...new Set(candidates.map(c => c.bookmaker))], methodology: 'Recent weighted scoring with a normal predictive distribution; uncalibrated, not a measured accuracy rate.' };
 }
 export function buildSlip(candidates, target, { maxLegs = 50, banned = new Set() } = {}) {
   if (!TARGETS.includes(target)) throw new Error('Choose target odds 5, 10, 50, 100, or 200');
-  const eligible = candidates.filter(c => !banned.has(c.id));
+  const eligible = candidates.filter(c => !banned.has(c.id) && Number.isFinite(c.odds) && c.odds > 1
+    && Number.isFinite(c.probability) && c.probability > 0 && c.probability <= 1);
   const solutions = [], partials = [];
+  const nearTarget = target * 1.05;
+  const compareSolutions = (a, b) => {
+    const aNear = a.odds <= nearTarget, bNear = b.odds <= nearTarget;
+    if (aNear !== bNear) return aNear ? -1 : 1;
+    return aNear ? b.logP - a.logP || a.odds - b.odds : a.odds - b.odds || b.logP - a.logP;
+  };
   for (const book of new Set(eligible.map(c => c.bookmaker))) {
-    const state = { picks: [], odds: 1, logP: 0, events: new Set() };
-    const ranked = eligible.filter(c => c.bookmaker === book).sort((a, b) => b.probability - a.probability || b.expectedReturn - a.expectedReturn);
-    for (const c of ranked) {
-      if (state.picks.length >= maxLegs || state.odds >= target) break;
-      if (state.events.has(c.eventId)) continue;
-      state.picks.push(c); state.odds *= c.odds; state.logP += Math.log(c.probability); state.events.add(c.eventId);
+    const groups = new Map();
+    for (const c of eligible.filter(c => c.bookmaker === book)) {
+      const key = c.gameId ?? c.eventId;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(c);
     }
-    if (state.picks.length) (state.odds >= target ? solutions : partials).push(state);
+    let beam = [{ picks: [], odds: 1, logP: 0 }], bestSolution;
+    for (const choices of groups.values()) {
+      const buckets = new Map();
+      const retain = state => {
+        const key = `${state.picks.length}:${Math.round(Math.log(state.odds) / 0.01)}`;
+        const values = buckets.get(key) ?? [];
+        values.push(state); values.sort((a, b) => b.logP - a.logP || b.odds - a.odds);
+        buckets.set(key, values.slice(0, 2));
+      };
+      for (const state of beam) {
+        retain(state);
+        if (state.picks.length >= maxLegs) continue;
+        for (const c of choices) {
+          const next = { picks: [...state.picks, c], odds: state.odds * c.odds, logP: state.logP + Math.log(c.probability) };
+          if (next.odds >= target - 1e-12) {
+            if (!bestSolution || compareSolutions(next, bestSolution) < 0) bestSolution = next;
+          } else retain(next);
+        }
+      }
+      beam = [...buckets.values()].flat();
+      // Bound work for unusually large player-market feeds, retaining progress
+      // across the complete odds range rather than only high-probability singles.
+      if (beam.length > 8000) {
+        const bins = new Map();
+        for (const state of beam) {
+          const key = Math.round(Math.log(state.odds) / .01);
+          const old = bins.get(key);
+          if (!old || state.logP > old.logP) bins.set(key, state);
+        }
+        beam = [...bins.values()];
+      }
+    }
+    // A maximum-price path guarantees we do not report a partial simply because
+    // the bounded search pruned a feasible path.
+    const maximumPath = { picks: [], odds: 1, logP: 0 };
+    for (const c of [...groups.values()].map(rows => rows.reduce((a, b) => b.odds > a.odds ? b : a)).sort((a, b) => b.odds - a.odds).slice(0, maxLegs)) {
+      maximumPath.picks.push(c); maximumPath.odds *= c.odds; maximumPath.logP += Math.log(c.probability);
+      if (maximumPath.odds >= target - 1e-12) break;
+    }
+    if (maximumPath.odds >= target - 1e-12 && (!bestSolution || compareSolutions(maximumPath, bestSolution) < 0)) bestSolution = maximumPath;
+    if (bestSolution) solutions.push(bestSolution);
+    const partial = [...beam, maximumPath].filter(s => s.picks.length && s.odds < target - 1e-12)
+      .sort((a, b) => b.odds - a.odds || b.logP - a.logP)[0];
+    if (partial) partials.push(partial);
   }
-  const rank = (a, b) => b.logP / b.picks.length - a.logP / a.picks.length || Math.abs(a.odds - target) - Math.abs(b.odds - target);
-  solutions.sort(rank); partials.sort(rank);
+  solutions.sort(compareSolutions); partials.sort((a, b) => b.odds - a.odds || b.logP - a.logP);
   const selected = solutions[0] ?? partials[0];
-  return { target, targetReached: Boolean(solutions.length), combinedOdds: selected?.odds ?? 1, picks: selected?.picks ?? [],
+  const picks = [...(selected?.picks ?? [])].sort((a, b) => b.probability - a.probability || b.expectedReturn - a.expectedReturn);
+  return { target, targetReached: Boolean(solutions.length), closeToTarget: Boolean(solutions.length && selected.odds <= nearTarget), combinedOdds: selected?.odds ?? 1, picks,
     estimatedAllWinProbability: selected ? Math.exp(selected.logP) : null,
-    rankingRule: 'Individual statistical probability, highest first. One pick per game and one bookmaker per slip. Bookmakers are compared by the geometric mean of individual probabilities.',
+    oddsCalculation: picks.map(p => p.odds),
+    rankingRule: 'Search game combinations at one bookmaker for the target odds. Prefer combinations within 5% above the target, choosing the highest estimated all-win chance in that range. Display individual picks in descending estimated probability.',
     probabilityNote: 'Product assumes independent outcomes. Estimates are uncalibrated; a higher odds target does not mean a higher chance of winning.',
-    reason: solutions.length ? null : 'No qualifying slip found within the search limits at one bookmaker. No extra picks were invented.' };
+    reason: solutions.length ? null : picks.length ? `Available qualifying games reach ${selected.odds.toFixed(2)} combined odds, below your ${target} target. This partial slip can still be exported.` : 'No qualifying priced games are available for these filters. Refresh prices or change the date, market, or minimum chance.' };
 }

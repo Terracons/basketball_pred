@@ -1,6 +1,8 @@
 # Verification, 12 November 2026
 
-The automated suite now passes 40 tests, including prediction ranking, partial exports, AI thresholds and request caps, signed access, shared cloud quotas, distributed locking, and the data collector. The collector was also exercised against real ESPN responses and SportsDataverse season downloads. No paid AI calls were made.
+The automated suite now passes 47 tests, including target-odds combinations, individual ranking, partial exports, automatic cold-start quote loading, cache/quota reuse, AI thresholds and request caps, signed access, shared cloud quotas, distributed locking, and the data collector. The collector was also exercised against real ESPN responses and SportsDataverse season downloads. No paid AI calls were made.
+
+Regression checks verify a 5-odds request returns three selections at 1.70, 1.80 and 1.65, with actual combined odds 5.049 and estimated individual chances 80%, 75%, and 70%. Their estimated all-win probability is 42% under independence. The test values are fixtures, not real betting recommendations. A second regression verifies the app exports a fuller 3.8025 partial combination instead of stopping at a 2.00 single when 5 cannot be reached. All five supported target levels are tested.
 
 ## Initial import results
 
@@ -43,5 +45,7 @@ The statistical prediction baseline and local dashboard are implemented. A walk-
 The Vercel snapshot build passed at 66,002,944 bytes (about 63 MiB), containing 8,202 games and 106,263 recent player appearances. Hosted Redis behavior has been tested with a REST mock across two independent local SQLite instances. A real Vercel deployment and Redis connection still require the user's hosting project and environment configuration.
 
 Browser checks verified the local dashboard and a real partial 200-odds result, with individual probability ranking and no forced selections. No horizontal overflow was found at viewport widths 320, 768, 1024, 1280, and 1536. The saved ranked CSV was verified on disk; the browser download-event check timed out, so download-event completion was not confirmed through browser automation.
+
+After the target-slip correction, the browser verified a 5-odds request against stored NBA prices returned three games, individual estimated chances, and the displayed calculation `1.87 × 1.88 × 1.88 = 6.61`. The actual combined value was 6.609328, above the requested minimum, with no closer target combination found in that feed. The estimated all-win probability was 16.9%, assuming independence. The app explicitly distinguishes this from each pick's chance. All three slip rows remained visible without horizontal overflow at the five tested viewport widths. These stored-data results are verification artifacts, not current betting recommendations.
 
 Run `node --test` to repeat the suite, `node src/cli.js status` to inspect collection health, and `node src/cli.js export` to rebuild the JSONL datasets.
