@@ -1,4 +1,29 @@
-# Verification, 12 November 2026
+# Verification
+
+## November 13, 2026: player markets and current coverage
+
+The full automated suite passes 70 tests. Added cases cover selected rebound directions, nonnegative count probabilities and exact pushes, future-observation rejection and bounded provider clock skew, date-specific freshness, mixed-market completeness, one-market credit costs, five-event batches stopping at quota, empty-market checkpoints, verified NCAA aliases, safe prior-team player history, ranked browsing, and deduplicated summary collection. Existing target-odds, partial export, AI limits, authentication and local/hosted parity regressions still pass.
+
+Live collection refreshed 25 NCAA completed-game summaries and four NBA summaries. At the refresh, all nine upcoming NBA priced events and all 69 upcoming NCAA priced events matched stored fixtures after explicit alias fixes. These are timestamped observations, not a guarantee that all listed games remain upcoming or have player prices. NCAA coverage is primarily men's Division I and their opponents; the pasted sportsbook list also contained Division II and live games outside this scope.
+
+Live selected-market requests returned NBA rebound prices for 13 players in one game and NCAA rebound prices for two players in one game. Browser batch loading added two more NBA games before the conservative local daily credit guard stopped further calls. Existing quotes remained usable. The local ledger includes reserved failed network attempts, so it can exceed actual provider usage. No limits were reset or bypassed, and no AI requests were made.
+
+The browser verified Player rebounds with Under only, three priced NBA games, 31 distinct ranked player choices, and a two-game slip at approximately 5.02 combined odds for a target of five. Both picks were unders, ordered by estimated probability. The available-picks disclosure opened correctly, and the browser reported no JavaScript errors. This is a recorded interface check, not a current recommendation. A screenshot is saved privately as `data/rebounds-ui.jpg`.
+
+The `minutes-count-v2` rebound distribution comparison used the same projected mean for the old normal and new Poisson/negative-binomial distributions. Mean squared cumulative-probability error across fixed thresholds 0.5 through 29.5 was:
+
+| League | Eligible played appearances | Previous normal score | Count-model score | Relative reduction |
+| --- | ---: | ---: | ---: | ---: |
+| NBA | 191 | 0.0393323 | 0.0384162 | 2.3% |
+| NCAA men | 89 | 0.0394311 | 0.0386616 | 2.0% |
+
+Lower is better. This modest retrospective improvement does not establish bookmaker-line accuracy, calibration, DNP handling, or profitability. Rookie and ambiguous identities remain excluded when eight valid appearances cannot be obtained. The model uses estimated minutes, without verified injuries or starting lineups.
+
+The rerun also evaluated 200 NBA and 159 eligible NCAA team games. Winner accuracy changed from 61.0% to 67.0% and 62.9% to 75.5%; total-points MAE changed from 14.543 to 14.732 and 13.726 to 13.659. The NBA totals result still did not improve. On paired player-points targets, NBA MAE was 4.797 versus 4.806 across 180 appearances, and NCAA MAE was 4.137 versus 4.054 across 36. The report at `data/prediction-evaluation.json` is the November 13 rerun; historical results below retain their original date.
+
+The updated Vercel build passed with a 78,082,048-byte seed containing 8,234 games, 15,340 team boxes and 111,433 player appearances. The rolling one-year window means these totals can decrease as older games expire. The refreshed local server runs at `http://127.0.0.1:3000`. Source changes are ready for deployment; a real Vercel deployment and Redis connection were not performed in this check.
+
+## November 12, 2026: earlier verification
 
 The automated suite now passes 58 tests, including possession/efficiency formulas, overtime normalization, opponent adjustment, league-wide time cutoffs, invalid box-score rejection, labeled fallbacks, recent player role changes, local/hosted prediction parity, cached normalization upgrades, target-odds combinations, ranking, partial exports, quote loading, AI caps, authentication, shared cloud quotas, and the collector. No paid AI calls were made.
 

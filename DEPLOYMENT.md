@@ -8,7 +8,7 @@ This repository supports Vercel's Node.js Functions and also runs locally. API k
 2. Use framework **Other**, Node.js **22.x**, build command **npm run build**, and output directory **public**. `vercel.json` already declares these build settings, the API rewrite, security headers, and function duration.
 3. In the project's **Storage / Marketplace**, connect an **Upstash Redis** database. Use its free plan if it meets your usage. Confirm that `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are added to the project's environment variables. Legacy `KV_REST_API_URL` names are not used here.
 4. Add the environment variables below, then deploy or redeploy. Use the same values for Preview if you want to test a preview deployment.
-5. Open the deployment, sign in with `APP_PASSWORD`, select NBA or NCAA and a target such as 5, then click **Build my slip**. Missing or stale game prices and fixtures load automatically, within the quota limits. A separate **Refresh game prices** button also updates up to five missing game summaries. Game odds use up to two credits per selected league. Price and fixture caches avoid repeated spending. Player prices remain an explicit per-event request.
+5. Open the deployment, sign in with `APP_PASSWORD`, select NBA or NCAA and a target such as 5, then click **Build my slip**. Missing or stale game prices and fixtures load automatically, within the quota limits. A separate **Refresh game prices** button also updates up to five missing game summaries. Game odds use up to two credits per selected league. For player markets, choose a statistic and Over only, Under only, or Both; load one event or up to five games explicitly. Each uncached selected-statistic event reserves one credit. Building a player slip can load the selected event if needed. Caches avoid repeated spending, and empty player-market responses are skipped for three hours by batch loading.
 
 | Variable | Required? | Purpose |
 | --- | --- | --- |
@@ -35,7 +35,7 @@ Provider calls in production have a 45-second timeout, and new external calls st
 
 Prediction reports are saved in Redis, with JSON and CSV generated in the instance's temporary scratch space. Use the result's download buttons to keep a local copy, including partial slips. Temporary files are not durable cloud storage. The full outcome archive remains in your local project and is not uploaded.
 
-Rebuild/redeploy periodically to refresh the historical seed. Between rebuilds, **Refresh game prices** updates the surrounding dates and a bounded recent-statistics backlog. This is an on-demand prototype, not an unattended live feed or an unlimited multi-user service. Do not run a separate local collector against the same provider keys without accounting for its quota usage.
+Rebuild/redeploy periodically to refresh the historical seed. Between rebuilds, **Refresh fixtures & prices** updates the surrounding dates and a bounded recent-statistics backlog. This is an on-demand prototype, not an unattended live feed or an unlimited multi-user service. Do not run a separate local collector against the same provider keys without accounting for its quota usage.
 
 ## Privacy and access
 

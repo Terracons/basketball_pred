@@ -7,6 +7,8 @@ import { canonical } from './analytics.js';
 import { odds, scoreboard, summaries, dayString } from './collect.js';
 import { createAuth } from './auth.js';
 import { preparePredictionData } from './prepare-prediction.js';
+import { playerMarkets, lagosDay, isFreshQuote } from './markets.js';
+import { loadPlayerPrices } from './player-prices.js';
 
 export function createApplication({ store, directory, env = process.env, beforeExternalFetch = async () => {}, loginLimiter = async () => true, fetcher = fetch } = {}) {
   const production = env.VERCEL === '1', port = Number(env.PORT || 3100);
@@ -38,7 +40,7 @@ export function createApplication({ store, directory, env = process.env, beforeE
     try { return JSON.parse(data); } catch { throw new Error('Invalid JSON request'); }
   }
   function predictionOptions(value) {
-    const filtered = Object.fromEntries(['league', 'type', 'playerStat', 'bookmaker', 'date', 'model'].filter(k => typeof value[k] === 'string').map(k => [k, value[k]]));
+    const filtered = Object.fromEntries(['league', 'type', 'playerStat', 'playerDirection', 'playerEventId', 'bookmaker', 'date', 'model'].filter(k => typeof value[k] === 'string').map(k => [k, value[k]]));
     return { ...filtered, target: Number(value.target), minProbability: Number(value.minProbability ?? 0.5),
       aiEnabled: value.aiEnabled === true, researchEnabled: value.researchEnabled === true };
   }
@@ -74,10 +76,17 @@ export function createApplication({ store, directory, env = process.env, beforeE
       }
       if (request.method === 'GET' && url.pathname === '/api/fixtures') {
         const league = url.searchParams.get('league') ?? 'nba'; if (!['nba', 'ncaa'].includes(league)) throw new Error('Invalid league');
-        const now = new Date().toISOString(), fixtures = canonical(store, 'game', league).filter(g => g.status === 'scheduled' && g.starts_at > now).sort((a, b) => a.starts_at.localeCompare(b.starts_at)).slice(0, 100);
+        const now = new Date().toISOString(), games = canonical(store, 'game', league);
+        const fixtures = games.filter(g => g.status === 'scheduled' && g.starts_at > now).sort((a, b) => a.starts_at.localeCompare(b.starts_at)).slice(0, 200);
         const snapshots = store.rows('odds', league).filter(r => r.starts_at > now);
-        const events = [...new Map(snapshots.map(r => [r.event_id, { id: r.event_id, home: r.home_name, away: r.away_name, startsAt: r.starts_at }])).values()];
-        send(response, 200, { fixtures, events, bookmakers: [...new Set(snapshots.map(r => r.bookmaker))].sort(), priceUpdatedAt: snapshots.map(r => r.price_updated_at).sort().at(-1) ?? null }); return;
+        const fresh = snapshots.filter(r => isFreshQuote(r, Date.parse(now)));
+        const events = [...new Map(snapshots.map(r => [r.event_id, { id: r.event_id, home: r.home_name, away: r.away_name, startsAt: r.starts_at,
+          freshMarkets: [...new Set(fresh.filter(p => p.event_id === r.event_id).map(p => p.market))] }])).values()].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+        send(response, 200, { fixtures, events, bookmakers: [...new Set(fresh.map(r => r.bookmaker))].sort(),
+          freshPriceEvents: new Set(fresh.map(r => r.event_id)).size,
+          coverageNote: league === 'ncaa' ? 'NCAA men: primarily Division I and their opponents. Division II/III, women and live games are not fully covered.' : 'NBA pregame markets. Started games are excluded.',
+          latestCompletedAt: games.filter(g => g.status === 'final').map(g => g.starts_at).sort().at(-1) ?? null,
+          priceUpdatedAt: snapshots.map(r => r.price_updated_at).sort().at(-1) ?? null }); return;
       }
       if (request.method !== 'POST' || request.headers['x-app-token'] !== auth.actionToken) { send(response, 403, { error: 'Invalid app action' }); return; }
       const value = await body(request);
@@ -90,18 +99,23 @@ export function createApplication({ store, directory, env = process.env, beforeE
         })); return;
       }
       if (url.pathname === '/api/models') { send(response, 200, await locked(() => intelligence.models())); return; }
+      if (url.pathname === '/api/player-odds-batch') {
+        send(response, 200, await locked(() => loadPlayerPrices(store, transport(), value, env.ODDS_API_KEY))); return;
+      }
       if (['/api/refresh-odds', '/api/player-odds'].includes(url.pathname)) {
         if (!['nba', 'ncaa'].includes(value.league)) throw new Error('Invalid league');
-        if (url.pathname === '/api/player-odds' && !store.rows('odds', value.league).some(r => r.event_id === value.eventId)) throw new Error('Select a known odds event');
+        if (url.pathname === '/api/player-odds' && (!playerMarkets[value.playerStat] || !store.rows('odds', value.league).some(r => r.event_id === value.eventId && Date.parse(r.starts_at) > Date.now()))) throw new Error('Select an upcoming event and a valid player statistic');
         send(response, 200, await locked(async () => {
           const client = transport();
           if (url.pathname === '/api/refresh-odds') {
-            const date = new Date();
-            for (const offset of [-1, 0, 1]) { const d = new Date(date); d.setUTCDate(d.getUTCDate() + offset); await scoreboard(client, store, value.league, dayString(d)); }
+            const day = value.date || lagosDay(Date.now());
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !Number.isFinite(Date.parse(day)) || dayString(new Date(day)) !== day) throw new Error('Invalid refresh date');
+            for (const offset of [-1, 0, 1]) { const d = new Date(`${day}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + offset); await scoreboard(client, store, value.league, dayString(d)); }
             const boxes = await summaries(client, store, value.league, 5);
             if (boxes.errors.length) console.warn(`${value.league}: some recent summaries are incomplete`);
           }
-          return odds(client, store, value.league, env.ODDS_API_KEY, url.pathname === '/api/player-odds' ? value.eventId : undefined);
+          return odds(client, store, value.league, env.ODDS_API_KEY, url.pathname === '/api/player-odds' ? value.eventId : undefined,
+            url.pathname === '/api/player-odds' ? { playerStat: value.playerStat } : {});
         })); return;
       }
       send(response, 404, { error: 'Unknown endpoint' });

@@ -1,9 +1,11 @@
 import { canonical } from './analytics.js';
 import { createEfficiencyContext, efficiencyProjection } from './efficiency.js';
+import { playerMarkets, playerDirections, lagosDay, isFreshQuote } from './markets.js';
+import { countLineProbabilities } from './count-distribution.js';
+export { playerMarkets } from './markets.js';
 
 export const TARGETS = [5, 10, 50, 100, 200];
 export const TYPES = ['over', 'under', 'player', 'win', 'lose', 'mixed'];
-export const playerMarkets = { points: 'player_points', rebounds: 'player_rebounds', assists: 'player_assists', pra: 'player_points_rebounds_assists' };
 // Explicit aliases checked against paired provider fixtures, never fuzzy guesses.
 const aliases = { laclippers: 'losangelesclippers', lalakers: 'losangeleslakers',
   umkckangaroos: 'kansascityroos', morganstbears: 'morganstatebears', coppinsteagles: 'coppinstateeagles',
@@ -11,7 +13,19 @@ const aliases = { laclippers: 'losangelesclippers', lalakers: 'losangeleslakers'
   centralconnecticutstbluedevils: 'centralconnecticutbluedevils',
   fortwaynemastodons: 'purduefortwaynemastodons', loyolamdgreyhounds: 'loyolamarylandgreyhounds',
   oklahomastcowboys: 'oklahomastatecowboys', montanastbobcats: 'montanastatebobcats',
-  newmexicostaggies: 'newmexicostateaggies', sanjosestspartans: 'sanjosestatespartans' };
+  newmexicostaggies: 'newmexicostateaggies', sanjosestspartans: 'sanjosestatespartans',
+  floridastseminoles: 'floridastateseminoles', texasamccislanders: 'texasamcorpuschristiislanders',
+  appalachianstmountaineers: 'appstatemountaineers', floridaintlgoldenpanthers: 'floridainternationalpanthers',
+  liusharks: 'longislanduniversitysharks', gwrevolutionaries: 'georgewashingtonrevolutionaries',
+  samhoustonstbearkats: 'samhoustonbearkats', michiganstspartans: 'michiganstatespartans',
+  mtstmarysmountaineers: 'mountstmarysmountaineers', prairieviewpanthers: 'prairieviewampanthers',
+  tennesseesttigers: 'tennesseestatetigers', semissouristredhawks: 'southeastmissouristateredhawks',
+  alcornstbraves: 'alcornstatebraves', northdakotastbison: 'northdakotastatebison', illinoisstredbirds: 'illinoisstateredbirds',
+  murraystracers: 'murraystateracers', wrightstraiders: 'wrightstateraiders', arizonastsundevils: 'arizonastatesundevils',
+  mississippistbulldogs: 'mississippistatebulldogs', chicagostcougars: 'chicagostatecougars',
+  oregonstbeavers: 'oregonstatebeavers', missvalleystdeltadevils: 'mississippivalleystatedeltadevils',
+  calbaptistlancers: 'californiabaptistlancers', coloradostrams: 'coloradostaterams', loyolachiramblers: 'loyolachicagoramblers',
+  southdakotastjackrabbits: 'southdakotastatejackrabbits', ncoloradobears: 'northerncoloradobears' };
 export function normalizedName(value) {
   const name = String(value ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
   return aliases[name] ?? name;
@@ -74,11 +88,14 @@ export function teamProjection(game, past, asOf, context) {
 export function playerProjection(rows, playerName, teamIds, stat, asOf, context, game, teamForecast) {
   const cutoff = Date.parse(asOf);
   const found = rows.filter(p => normalizedName(p.player_name) === normalizedName(playerName)
-    && teamIds.includes(p.team_id) && !p.did_not_play && Number.isFinite(p[stat]) && p.minutes > 0
+    && !p.did_not_play && Number.isFinite(p[stat]) && p[stat] >= 0 && p.minutes > 0
     && Date.parse(p.starts_at) + 6 * 3600000 < cutoff && cutoff - Date.parse(p.starts_at) <= 365 * 86400000);
-  const ids = new Set(found.map(p => p.player_id));
+  const current = found.filter(p => teamIds.includes(p.team_id)), ids = new Set(current.map(p => p.player_id));
   if (ids.size !== 1) return null;
-  const samples = found.sort((a, b) => b.starts_at.localeCompare(a.starts_at)).slice(0, 20);
+  const identity = [...ids][0], history = found.filter(p => p.player_id === identity).sort((a, b) => b.starts_at.localeCompare(a.starts_at));
+  if (!teamIds.includes(history[0].team_id)) return null;
+  const hasRecentCurrentAppearance = current.some(p => cutoff - Date.parse(p.starts_at) < 120 * 86400000);
+  const samples = (hasRecentCurrentAppearance ? history : history.filter(p => teamIds.includes(p.team_id))).slice(0, 20);
   if (samples.length < 8) return null;
   const recent = weighted(samples.map(p => p[stat])), teamId = samples[0].team_id;
   const regulationMinutes = p => {
@@ -95,24 +112,30 @@ export function playerProjection(rows, playerName, teamIds, stat, asOf, context,
   const opponent = context?.ratings.get(opponentId);
   const opponentFactor = stat === 'points' && opponent?.samples >= 8 ? Math.max(.9, Math.min(1.1, 1 + .5 * (opponent.adjustedDefense / context.leagueRating - 1))) : 1;
   const projected = rate * minutes * paceFactor * opponentFactor;
-  return { model: 'minutes-rate-v1', mean: projected, sd: Math.sqrt(Math.max(recent.variance, 4)) * Math.max(1, projected / Math.max(recent.mean, 1)), samples: samples.length,
+  if (!Number.isFinite(projected) || projected > 500) return null;
+  const dispersion = recent.mean > 0 ? Math.max(0, (recent.variance - recent.mean) / recent.mean ** 2) * samples.length / (samples.length + 10) : 0;
+  const countVariance = projected + dispersion * projected ** 2;
+  return { model: 'minutes-count-v2', mean: projected, sd: Math.sqrt(Math.max(countVariance, 1e-8)), countVariance,
+    distribution: dispersion > 1e-6 ? 'negative-binomial' : 'poisson', samples: samples.length,
     playerId: samples[0].player_id, teamId, minutes, perMinuteRate: rate, paceFactor, opponentFactor,
-    flags: ['Uncalibrated minutes and per-minute model', 'Availability and expected minutes not verified; minutes estimated from recent appearances',
+    historicalMean: recent.mean, historicalVariance: recent.variance,
+    flags: ['Uncalibrated minutes and count model', 'Availability and expected minutes not verified; minutes estimated from recent appearances',
       ...(historicalPace ? [] : ['Insufficient matched team pace history for player pace adjustment']),
+      ...(samples.some(p => p.team_id !== teamId) ? ['Per-minute history includes a previous team; minutes use the latest team'] : []),
       ...(recentRole.length < 5 ? ['Limited appearances with the latest team'] : [])] };
 }
 export function generateCandidates(store, options = {}) {
-  const { league = 'nba', type = 'over', playerStat = 'points', bookmaker = '', date,
+  const { league = 'nba', type = 'over', playerStat = 'points', playerDirection = 'both', bookmaker = '', date,
     asOf = new Date().toISOString(), minProbability = 0.5, maxPriceAgeHours = 6 } = options;
-  if (!['nba', 'ncaa'].includes(league) || !TYPES.includes(type) || !playerMarkets[playerStat]) throw new Error('Invalid prediction filters');
+  if (!['nba', 'ncaa'].includes(league) || !TYPES.includes(type) || !playerMarkets[playerStat] || !playerDirections.includes(playerDirection)) throw new Error('Invalid prediction filters');
   if (!Number.isFinite(Date.parse(asOf)) || !Number.isFinite(minProbability) || minProbability < 0.5 || minProbability > 0.95) throw new Error('Invalid probability or timestamp');
   if (date && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date)))) throw new Error('Invalid prediction date');
   const now = Date.parse(asOf), games = canonical(store, 'game', league);
   const upcoming = games.filter(g => g.status === 'scheduled' && Date.parse(g.starts_at) > now
-    && (!date || new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Lagos' }).format(new Date(g.starts_at)) === date));
+    && (!date || lagosDay(g.starts_at) === date));
   const snapshots = store.rows('odds', league).filter(r => Date.parse(r.starts_at) > now
-    && Date.parse(r.observed_at) <= now && Date.parse(r.price_updated_at) <= now
-    && now - Date.parse(r.price_updated_at) <= maxPriceAgeHours * 3600000 && (!bookmaker || r.bookmaker === bookmaker));
+    && (!date || lagosDay(r.starts_at) === date)
+    && isFreshQuote(r, now, maxPriceAgeHours) && (!bookmaker || r.bookmaker === bookmaker));
   const latest = new Map();
   for (const r of snapshots) {
     const key = `${r.event_id}:${r.bookmaker}:${r.market}`;
@@ -132,15 +155,26 @@ export function generateCandidates(store, options = {}) {
         unique.set(r.id, p);
       }
       playerRows.push(...unique.values());
+      // A confirmed current-team appearance resolves the player identity. Include
+      // prior-team history for transfers without guessing names or roster status.
+      const names = new Set(relevant.flatMap(r => (r.outcomes ?? []).map(o => normalizedName(o.description))));
+      const ids = [...new Set(playerRows.filter(p => names.has(normalizedName(p.player_name))).map(p => p.player_id))];
+      if (ids.length) {
+        for (const r of store.db.prepare(`SELECT id,payload FROM records WHERE kind='player_box' AND league=?
+          AND player_id IN (${ids.map(() => '?').join(',')}) AND starts_at>=? AND starts_at<?
+          AND source IN ('espn','sportsdataverse','snapshot') ORDER BY observed_at,CASE source WHEN 'espn' THEN 1 ELSE 0 END`).iterate(league, ...ids, new Date(now - 365 * 86400000).toISOString(), asOf)) unique.set(r.id, JSON.parse(r.payload));
+        playerRows.length = 0; playerRows.push(...unique.values());
+      }
     }
   }
   const teamBoxes = canonical(store, 'team_box', league, { start: new Date(now - 365 * 86400000).toISOString(), end: asOf });
   const context = createEfficiencyContext(games, teamBoxes, league, asOf);
   const candidates = [], excluded = { unmatchedEvents: 0, insufficientHistory: 0, belowThreshold: 0, staleOrUnavailable: 0 };
-  const projections = new Map();
+  const projections = new Map(), matchedEvents = new Set(), unmatchedEvents = new Map();
   for (const r of relevant) {
     const game = matchEvent(r, upcoming);
-    if (!game) { excluded.unmatchedEvents++; continue; }
+    if (!game) { unmatchedEvents.set(r.event_id, { eventId: r.event_id, home: r.home_name, away: r.away_name, startsAt: r.starts_at }); continue; }
+    matchedEvents.add(r.event_id);
     if (!projections.has(game.game_id)) projections.set(game.game_id, teamProjection(game, games, asOf, context));
     const projection = projections.get(game.game_id);
     for (const outcome of r.outcomes ?? []) {
@@ -148,9 +182,10 @@ export function generateCandidates(store, options = {}) {
       const isPlayer = r.market.startsWith('player_'), isTotal = r.market === 'totals';
       let probability, push = 0, label, detail = projection;
       if (isPlayer) {
+        if (!['Over', 'Under'].includes(outcome.name) || (playerDirection !== 'both' && outcome.name.toLowerCase() !== playerDirection)) continue;
         detail = playerProjection(playerRows, outcome.description, [game.home_id, game.away_id], playerStat, asOf, context, game, projection);
-        if (!detail || !['Over', 'Under'].includes(outcome.name) || !Number.isFinite(outcome.point)) { excluded.insufficientHistory++; continue; }
-        const p = lineProbabilities(detail.mean, detail.sd, outcome.point); probability = p[outcome.name.toLowerCase()]; push = p.push;
+        if (!detail || !['Over', 'Under'].includes(outcome.name) || !Number.isFinite(outcome.point) || outcome.point < 0 || outcome.point > 1000) { excluded.insufficientHistory++; continue; }
+        const p = countLineProbabilities(detail.mean, detail.countVariance, outcome.point); probability = p[outcome.name.toLowerCase()]; push = p.push;
         label = `${outcome.description}: ${outcome.name} ${outcome.point} ${playerStat.toUpperCase()}`;
       } else {
         if (!projection) { excluded.insufficientHistory++; continue; }
@@ -172,16 +207,20 @@ export function generateCandidates(store, options = {}) {
         eventId: r.event_id, gameId: game.game_id, league, home: game.home_name, away: game.away_name,
         startsAt: game.starts_at, bookmaker: r.bookmaker, market: r.market, label, odds: outcome.price,
         line: outcome.point ?? null, probability, pushProbability: push, expectedReturn,
-        priceUpdatedAt: r.price_updated_at, projection: detail, flags: detail.flags });
+        priceUpdatedAt: r.price_updated_at, priceObservedAt: r.observed_at, projection: detail,
+        flags: [...detail.flags, ...(Date.parse(r.price_updated_at) > Date.parse(r.observed_at) ? ['Provider clock is ahead of receipt time; quote freshness uses the earlier receipt timestamp'] : [])] });
     }
   }
-  excluded.staleOrUnavailable = snapshots.length ? 0 : 1;
+  excluded.staleOrUnavailable = relevant.length ? 0 : 1;
+  excluded.unmatchedEvents = unmatchedEvents.size;
   candidates.sort((a, b) => b.probability - a.probability || b.expectedReturn - a.expectedReturn);
   candidates.forEach((candidate, index) => { candidate.candidateRank = index + 1; });
-  return { generatedAt: asOf, league, type, candidates, excluded,
+  return { generatedAt: asOf, league, type, playerStat, playerDirection, date: date ?? null, candidates, excluded,
+    marketCoverage: { scheduledGames: upcoming.length, pricedEvents: new Set(relevant.map(r => r.event_id)).size,
+      matchedEvents: matchedEvents.size, availableMarkets: [...new Set(snapshots.map(r => r.market))], unmatchedGames: [...unmatchedEvents.values()].slice(0, 20) },
     qualifyingGameCount: new Set(candidates.map(c => c.gameId)).size,
     bookmakers: [...new Set(candidates.map(c => c.bookmaker))], dataCoverage: context.coverage,
-    methodology: 'Possession-based opponent-adjusted efficiency and pace when at least eight valid paired box scores exist per team; otherwise a labeled scoring fallback. Player props use estimated minutes and per-minute production. Supporting box-score factors are evidence, not extra arbitrary weights. Normal-distribution probabilities remain uncalibrated.' };
+    methodology: 'Team predictions use opponent-adjusted efficiency and pace, with a labeled scoring fallback if needed. Player props use estimated minutes, per-minute production and Poisson/negative-binomial count probabilities. At least eight prior appearances are required. Supporting factors are evidence. All probabilities remain uncalibrated.' };
 }
 export function buildSlip(candidates, target, { maxLegs = 50, banned = new Set() } = {}) {
   if (!TARGETS.includes(target)) throw new Error('Choose target odds 5, 10, 50, 100, or 200');

@@ -1,5 +1,7 @@
 import { csvRows } from './csv.js';
 import { boxRow, scheduleRow, espnGames, espnBox, cbbdGame } from './normalize.js';
+import { playerMarkets } from './markets.js';
+import { canonical } from './analytics.js';
 
 export const leagues = ['nba', 'ncaa'];
 export function checkLeague(league) { if (!leagues.includes(league)) throw new Error('League must be nba or ncaa'); }
@@ -16,8 +18,9 @@ export async function scoreboard(http, store, league, day) {
 export async function summaries(http, store, league, limit = 25) {
   const known = new Set(store.db.prepare("SELECT id FROM records WHERE kind='summary_complete' AND league=? AND source='espn' AND json_extract(payload,'$.schema_version')=1").all(league).map(x => x.id));
   // Recent incomplete summaries are retried. Completed historical files need no per-game calls.
-  const historyIds = new Set(store.db.prepare("SELECT DISTINCT game_id FROM records WHERE kind='player_box' AND league=? AND source='sportsdataverse'").all(league).map(x => x.game_id));
-  const pending = store.rows('game', league).filter(g => g.game_id && g.status === 'final' && !known.has(g.game_id) && !historyIds.has(g.game_id))
+  const pairedIds = new Set(store.db.prepare("SELECT game_id FROM records WHERE kind='team_box' AND league=? GROUP BY game_id HAVING COUNT(DISTINCT team_id)=2").all(league).map(r => r.game_id));
+  const historyIds = new Set(store.db.prepare("SELECT DISTINCT game_id FROM records WHERE kind='player_box' AND league=? AND source IN ('sportsdataverse','snapshot')").all(league).map(r => r.game_id).filter(id => pairedIds.has(id)));
+  const pending = canonical(store, 'game', league).filter(g => g.game_id && g.status === 'final' && !known.has(g.game_id) && !historyIds.has(g.game_id))
     .filter(g => store.db.prepare("SELECT 1 FROM records WHERE kind='game' AND league=? AND source='espn' AND id=?").get(league, g.game_id))
     .sort((a, b) => b.starts_at.localeCompare(a.starts_at)).slice(0, limit);
   let done = 0; const errors = [];
@@ -98,15 +101,16 @@ export async function cbbd(http, store, start, end, key) {
   // CBBD ids stay namespaced. Do not silently join unrelated source team/player ids.
   return { games: body.length };
 }
-export async function odds(http, store, league, key, eventId) {
+export async function odds(http, store, league, key, eventId, { playerStat } = {}) {
   checkLeague(league);
   if (!key) return { skipped: 'Set ODDS_API_KEY to enable odds snapshots' };
   const sport = league === 'nba' ? 'basketball_nba' : 'basketball_ncaab';
   if (eventId && !/^[a-zA-Z0-9_-]+$/.test(eventId)) throw new Error('Invalid odds event id');
-  const markets = eventId ? 'player_points,player_rebounds,player_assists' : 'h2h,totals';
+  if (playerStat !== undefined && !playerMarkets[playerStat]) throw new Error('Invalid player statistic');
+  const markets = eventId ? playerStat ? playerMarkets[playerStat] : 'player_points,player_rebounds,player_assists' : 'h2h,totals';
   const suffix = eventId ? `/events/${eventId}/odds` : '/odds';
   const url = `https://api.the-odds-api.com/v4/sports/${sport}${suffix}?regions=us&markets=${markets}&oddsFormat=decimal`;
-  const body = await http.json('odds', url, { headers: { 'x-api-key': key }, ttl: 3 * 3600000, cost: eventId ? 3 : 2 });
+  const body = await http.json('odds', url, { headers: { 'x-api-key': key }, ttl: 3 * 3600000, cost: markets.split(',').length });
   const observed = new Date().toISOString();
   const events = eventId ? [body] : body;
   if (!Array.isArray(events)) throw new Error('Odds response schema changed');
@@ -114,6 +118,14 @@ export async function odds(http, store, league, key, eventId) {
   store.transaction(() => {
     for (const event of events) {
       if (!event.id || !event.commence_time || !Array.isArray(event.bookmakers)) throw new Error('Invalid odds event');
+      if (eventId) for (const market of markets.split(',')) {
+        const id = `${event.id}:${market}`;
+        const prior = store.db.prepare("SELECT payload FROM records WHERE kind='market_check' AND league=? AND source='odds' AND id=?").get(league, id);
+        const previous = prior && JSON.parse(prior.payload);
+        store.put('market_check', league, 'odds', id, { event_id: event.id, starts_at: new Date(event.commence_time).toISOString(), market,
+          checked_at: previous && Date.parse(observed) - Date.parse(previous.checked_at) < 3 * 3600000 ? previous.checked_at : observed,
+          hasPrices: event.bookmakers.some(b => b.markets?.some(m => m.key === market && m.outcomes?.length)) }, observed);
+      }
       for (const book of event.bookmakers) for (const market of book.markets ?? []) {
         // Provider timestamps identify immutable price snapshots, including cached reruns.
         const updated = market.last_update || book.last_update;
@@ -126,5 +138,6 @@ export async function odds(http, store, league, key, eventId) {
       }
     }
   });
-  return { events: events.length, snapshots: count };
+  return { events: events.length, snapshots: count, markets: markets.split(','),
+    ...(eventId && !count ? { warning: `No ${playerStat ?? 'player'} prices were returned for this event by the available bookmakers.` } : {}) };
 }

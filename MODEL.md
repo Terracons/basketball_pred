@@ -22,11 +22,21 @@ Expected possessions are the mean of the teams' regulation pace. Matchup scoring
 
 Fixed, uncalibrated context assumptions are a home margin of two NBA points or three NCAA points, zero at a neutral venue, and 0.35 margin points per difference in rest days, capped at three rest days. Historical ratings remove these same context adjustments before opponent adjustment. A league-average overtime scoring allowance is added to totals. Venue and rest assumptions redistribute the margin without independently increasing the total.
 
-Total and margin distributions use separate recent variances. Standard-deviation floors are 15/12 points for NBA totals/margins and 12/10 for NCAA. Normal distributions estimate market probabilities; integer total/prop lines retain a separate push probability. Supporting shooting, rebound and turnover factors explain the ratings and are included in optional AI review. They do not receive additional arbitrary additive weights.
+Total and margin distributions use separate recent variances. Standard-deviation floors are 15/12 points for NBA totals/margins and 12/10 for NCAA. Normal distributions estimate team-market probabilities; integer total lines retain a separate push probability. Supporting shooting, rebound and turnover factors explain the ratings and are included in optional AI review. They do not receive additional arbitrary additive weights.
 
 If either team lacks eight valid paired boxes, a clearly labeled scoring-average fallback is used when eight score-only games exist for each team. Otherwise the game is excluded. This avoids inventing advanced statistics for incomplete history.
 
 Player estimates use weighted per-minute production multiplied by estimated minutes from the latest five appearances with the most recently observed team. Matched team history supplies a bounded pace adjustment. Points props also receive a bounded, partial opponent-defense adjustment. Future minutes, usage, availability and lineups are not verified. Rebounds, assists and PRA do not inherit the points-only defense adjustment.
+
+### Player count model, November 13
+
+Version `minutes-count-v2` requires at least eight played appearances in the preceding year. Names must resolve to one player ID among the event's teams. The latest known appearance must be with an event team. A confirmed appearance with that team within 120 days allows same-ID history from a previous team, which helps returning transfers early in a season. Minutes still use the latest team's role, with a warning when fewer than five appearances are available. New players without eight samples are excluded; the model does not invent their college or professional history.
+
+For projected count `mu`, estimate historical overdispersion as `alpha = max(0, (weightedVariance - weightedMean) / weightedMean^2) * n / (n + 10)`, or zero when the historical mean is zero. Predictive variance is `mu + alpha * mu^2`. Poisson is used when variance equals the mean; otherwise a negative-binomial distribution represents the additional variation. The shrinkage factor is a fixed modeling assumption, not a fitted optimum. Probability mass stays on nonnegative integers, and an integer line retains its exact push probability. See the primary [Poisson](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.poisson.html) and [negative-binomial](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.nbinom.html) definitions.
+
+The rebound comparison scores cumulative probabilities at fixed thresholds 0.5 through 29.5 on eligible played appearances. It compares the previous normal distribution and new count distribution with the same projected mean. It does not reconstruct bookmaker lines, account for DNPs, validate individual percentages, or establish an out-of-sample profit advantage. The approach also supplies points, assists and PRA probabilities, but those market probabilities have not been separately validated.
+
+Price matching requires explicit team aliases and compatible fixture times; there is no automatic fuzzy matching. Price freshness is specific to date, market and selected bookmaker. Immutable receipt timestamps must be at or before prediction time. Provider timestamps up to five minutes ahead of receipt are accepted using the earlier receipt time for freshness and are flagged; larger clock differences are excluded. Quotes older than six hours are excluded.
 
 ## Coverage and deployment
 
@@ -40,4 +50,4 @@ Vercel builds include one year of team boxes and period metadata, plus recent pl
 
 ## Validation limits
 
-See [VERIFICATION.md](VERIFICATION.md) for the paired walk-forward comparison and build checks. Winner accuracy improved in that sample; total-points error did not. Player points changed little for NBA and improved slightly in a small NCAA sample. We have not validated betting profit, real historical over/under line success, player-prop probabilities or accumulator probabilities. AI still skips picks at or above 70%, shares a maximum of five requests with optional search, and cannot inflate a statistical probability.
+See [VERIFICATION.md](VERIFICATION.md) for the dated comparisons and build checks. The November 12 team sample improved winner accuracy but not total-points error. The November 13 rebound count model modestly improved a distribution score. We have not validated betting profit, real historical over/under line success, individual player-prop percentages or accumulator probabilities. AI still skips picks at or above 70%, shares a maximum of five requests with optional search, and cannot inflate a statistical probability.

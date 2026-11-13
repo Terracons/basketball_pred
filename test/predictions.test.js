@@ -21,17 +21,17 @@ const pick = (id, probability = 0.65, price = 2, eventId = id, bookmaker = 'book
   id, probability, odds: price, eventId, bookmaker, expectedReturn: probability * price - 1,
   home: 'Home', away: 'Away', startsAt: '2026-11-13T18:00:00Z', market: 'totals', label: 'Over 200.5', projection: {}, flags: []
 });
-function seed(store, { price = 2, line = 200.5 } = {}) {
+function seed(store, { price = 2, line = 200.5, clock = asOf } = {}) {
   for (let i = 0; i < 20; i++) {
     const game = { game_id: `past-${i}`, home_id: 'h', away_id: 'a', home_name: 'Home', away_name: 'Away',
-      starts_at: new Date(Date.parse(asOf) - (i + 2) * 86400000).toISOString(), status: 'final', home_score: 110 + i % 3, away_score: 100 + i % 3 };
-    store.put('game', 'nba', 'espn', game.game_id, game, asOf);
+      starts_at: new Date(Date.parse(clock) - (i + 2) * 86400000).toISOString(), status: 'final', home_score: 110 + i % 3, away_score: 100 + i % 3 };
+    store.put('game', 'nba', 'espn', game.game_id, game, clock);
   }
   for (let i = 0; i < 8; i++) {
-    const starts_at = new Date(Date.parse(asOf) + (i + 1) * 86400000).toISOString();
-    store.put('game', 'nba', 'espn', `future-${i}`, { game_id: `future-${i}`, home_id: 'h', away_id: 'a', home_name: 'Home', away_name: 'Away', starts_at, status: 'scheduled' }, asOf);
+    const starts_at = new Date(Date.parse(clock) + (i + 1) * 86400000).toISOString();
+    store.put('game', 'nba', 'espn', `future-${i}`, { game_id: `future-${i}`, home_id: 'h', away_id: 'a', home_name: 'Home', away_name: 'Away', starts_at, status: 'scheduled' }, clock);
     store.put('odds', 'nba', 'odds', `price-${i}`, { event_id: `event-${i}`, starts_at, home_name: 'Home', away_name: 'Away', bookmaker: 'book', market: 'totals',
-      price_updated_at: asOf, outcomes: [{ name: 'Over', point: line, price }, { name: 'Under', point: line, price }] }, asOf);
+      price_updated_at: clock, outcomes: [{ name: 'Over', point: line, price }, { name: 'Under', point: line, price }] }, clock);
   }
 }
 test('integer lines reserve push probability and fractional lines have no push', () => {
@@ -128,7 +128,7 @@ test('missing prices are fetched on build, while existing fresh prices do not sp
   assert.equal(fixtureCalls, 3); assert.equal(oddsCalls, 1);
 });
 test('cold-start predict API loads real-shaped quotes then returns a multi-game slip without manual refresh', async t => {
-  const store = setup(t); seed(store); store.db.exec("DELETE FROM records WHERE kind='odds'");
+  const store = setup(t); seed(store, { clock: new Date().toISOString() }); store.db.exec("DELETE FROM records WHERE kind='odds'");
   let calls = 0;
   const upcoming = store.rows('game', 'nba').filter(g => g.status === 'scheduled').slice(0, 3);
   const app = createApplication({ store, directory: join(tmpdir(), `courtside-api-${process.pid}`), env: { ODDS_API_KEY: 'test-only' }, fetcher: async url => {

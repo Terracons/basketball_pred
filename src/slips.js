@@ -41,7 +41,14 @@ export async function createPrediction(store, intelligence, options = {}, { expo
   }
   slip.picks = slip.picks.map(pick => ({ ...pick, ai: pick.probability >= 0.7 ? { status: 'skipped_70_percent' }
     : reviews.get(pick.id) ?? { status: options.aiEnabled ? 'request_limit_or_unreviewed' : 'disabled' } }));
+  const preview = new Map();
+  for (const pick of generated.candidates) if (!banned.has(pick.id)) {
+    const key = pick.market.startsWith('player_') ? `${pick.gameId}:${pick.projection.playerId}:${pick.market}:${pick.label.includes(': Over ') ? 'over' : 'under'}` : `${pick.gameId}:${pick.label}`;
+    if (!preview.has(key)) preview.set(key, { id: pick.id, gameId: pick.gameId, home: pick.home, away: pick.away, startsAt: pick.startsAt,
+      label: pick.label, odds: pick.odds, probability: pick.probability, bookmaker: pick.bookmaker, inSlip: slip.picks.some(p => p.id === pick.id) });
+  }
   const result = { slipId, ...generated, candidates: undefined, candidateCount: generated.candidates.length,
+    availablePicks: [...preview.values()].slice(0, 100), availablePickCount: preview.size,
     slip, aiRequestsAndSearches: intelligence.used(slipId), aiThreshold: 0.7, maxRequests: 5,
     reviews: [...reviews.entries()].map(([pickId, review]) => ({ pickId, ...review })), preparation, errors };
   store.put('prediction', options.league ?? 'nba', 'statistics', slipId, result);

@@ -4,6 +4,7 @@ import { Store } from './store.js';
 import { canonical } from './analytics.js';
 import { teamProjection, baselineTeamProjection, normalCdf, playerProjection, weighted } from './predict.js';
 import { createEfficiencyContext, MODEL_VERSION } from './efficiency.js';
+import { countLineProbabilities } from './count-distribution.js';
 
 if (existsSync('.env')) process.loadEnvFile('.env');
 const directory = resolve(process.env.DATA_DIR || './data'), store = new Store(join(directory, 'basketball.sqlite'));
@@ -55,20 +56,34 @@ try {
         AND source IN ('espn','sportsdataverse','snapshot') AND player_id IN (${playerIds.map(() => '?').join(',')})
         ORDER BY observed_at,CASE source WHEN 'espn' THEN 1 ELSE 0 END`).iterate(league, cutoff, ...playerIds)) histories.set(row.id, JSON.parse(row.payload));
     }
-    const playerRows = [...histories.values()], playerErrors = [];
+    const playerRows = [...histories.values()], playerErrors = [], reboundErrors = [];
     for (const actual of appearances) {
       const game = gameMap.get(actual.game_id), teamIds = [game.home_id, game.away_id];
       if (context?.asOf !== game.starts_at) context = createEfficiencyContext(games, boxes, league, game.starts_at);
       const forecast = teamProjection(game, games, game.starts_at, context);
+      const rebound = playerProjection(playerRows, actual.player_name, teamIds, 'rebounds', game.starts_at, context, game, forecast);
+      if (rebound && Number.isFinite(actual.rebounds)) {
+        const oldSd = Math.sqrt(Math.max(rebound.historicalVariance, 4)) * Math.max(1, rebound.mean / Math.max(rebound.historicalMean, 1));
+        let normalRps = 0, countRps = 0;
+        for (let k = 0; k < 30; k++) {
+          const outcome = Number(actual.rebounds <= k);
+          normalRps += (normalCdf(k + .5, rebound.mean, oldSd) - outcome) ** 2;
+          countRps += (countLineProbabilities(rebound.mean, rebound.countVariance, k + .5).under - outcome) ** 2;
+        }
+        reboundErrors.push({ normalRps: normalRps / 30, countRps: countRps / 30 });
+      }
       const p = playerProjection(playerRows, actual.player_name, teamIds, 'points', game.starts_at, context, game, forecast);
       if (!p) continue;
       const prior = playerRows.filter(r => r.player_id === actual.player_id && teamIds.includes(r.team_id) && !r.did_not_play && r.minutes > 0 && Number.isFinite(r.points)
         && Date.parse(r.starts_at) + 6 * 3600000 < Date.parse(game.starts_at) && Date.parse(game.starts_at) - Date.parse(r.starts_at) <= 365 * 86400000)
         .sort((a, b) => b.starts_at.localeCompare(a.starts_at)).slice(0, 20);
-      playerErrors.push({ baselineError: Math.abs(weighted(prior.map(r => r.points)).mean - actual.points), upgradedError: Math.abs(p.mean - actual.points) });
+      if (prior.length >= 8) playerErrors.push({ baselineError: Math.abs(weighted(prior.map(r => r.points)).mean - actual.points), upgradedError: Math.abs(p.mean - actual.points) });
     }
     report.leagues[league] = { attempted: targets.length, skipped: targets.length - upgraded.length, fallbackGames: fallback,
-      baseline: summarize(baseline), upgraded: summarize(upgraded), playerPoints: { attempted: appearances.length, tested: playerErrors.length,
+      baseline: summarize(baseline), upgraded: summarize(upgraded), playerReboundsDistribution: { tested: reboundErrors.length,
+        normalMeanScore: average(reboundErrors, 'normalRps'), countMeanScore: average(reboundErrors, 'countRps'),
+        method: 'Mean squared CDF error over fixed thresholds 0.5 through 29.5. Lower is better. Same projected means for both distributions; played appearances only, not bookmaker-line accuracy.' },
+      playerPoints: { attempted: appearances.length, tested: playerErrors.length,
         baselineMAE: average(playerErrors, 'baselineError'), upgradedMAE: average(playerErrors, 'upgradedError'),
         caveat: 'Played appearances only. Does not validate DNP/injury handling, rebounds, assists, PRA, prop-line win rates or probabilities.' } };
     console.log(JSON.stringify({ league, ...report.leagues[league] }, null, 2));
